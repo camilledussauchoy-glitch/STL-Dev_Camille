@@ -166,18 +166,6 @@ def zeros(shape, device=None, dtype=None):
     return torch.zeros(shape, dtype=fix_dtype, device=device)
 
 
-'''
-def mean(x, dim):
-    """
-    Compute the mean of `x` along the given dimension.
-
-    NOTE: `dim` has NO default value on purpose, so calls like
-    `bk.mean(t, -1)` behave exactly as written.
-    """
-    return torch.mean(x, dim=dim)
-'''
-
-
 def maskmean(x, square=False, dim=(-2, -1), mask=None):
     """
     Compute the mean of x along given dims, optionally masked.

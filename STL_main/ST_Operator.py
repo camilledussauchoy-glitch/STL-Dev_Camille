@@ -137,9 +137,6 @@ class ST_Operator:
         self.L = self.wavelet_op.L
         self.WType = self.wavelet_op.WType
         self.dg = data.dg
-        self.layer1_mask, self.layer2_mask = (
-            self.wavelet_op._build_scattering_layer_masks()
-        )
 
         # Scattering transform related parameters
         self.SC = SC
@@ -389,24 +386,15 @@ class ST_Operator:
             ##############################################################################
             ########################## S1(j3) = Mean(|I*psi3|) ###########################
             ##############################################################################
-            data_st.S1[:, :, j3, :] = maybe_crop(data_l1m[j3]).mean(
-                mask=(
-                    maybe_crop(self.layer1_mask[j3])
-                    if self.wavelet_op.mask_full_res is not None
-                    else None
-                )
+            data_st.S1[:, :, j3, :] = self.wavelet_op.mean(
+                maybe_crop(data_l1m[j3])
             )  # (Nb,Nc,L)
 
             ##############################################################################
             ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
             ##############################################################################
-            data_st.S2[:, :, j3, :] = maybe_crop(data_l1m[j3]).mean(
-                square=True,
-                mask=(
-                    maybe_crop(self.layer1_mask[j3])
-                    if self.wavelet_op.mask_full_res is not None
-                    else None
-                ),
+            data_st.S2[:, :, j3, :] = self.wavelet_op.mean(
+                maybe_crop(data_l1m[j3]), square=True
             )  # (Nb,Nc,L)
 
             data_l1m_l2 = {}
@@ -427,45 +415,20 @@ class ST_Operator:
                 ##############################################################################
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
-                data_st.S3[:, :, j2, j3, :, :] = maybe_crop(data_l1m_l2_j2).cov(
+                data_st.S3[:, :, j2, j3, :, :] = self.wavelet_op.cov(
+                    maybe_crop(data_l1m_l2_j2),
                     maybe_crop(data_l1[:, :, None]),
-                    mask=(
-                        maybe_crop(
-                            self.layer2_mask[j3][j2]
-                        )  # mask for |I*psi2|*psi3 contains the one for I*psi3
-                        if self.wavelet_op.mask_full_res is not None
-                        else None
-                    ),
                 )  # (Nb,Nc,L2,L3)
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
-                tmp_layer3_mask = (
-                    self.layer2_mask[j3][j2].copy()
-                    if self.wavelet_op.mask_full_res is not None
-                    else None
-                )
 
                 for j1 in range(j2 + 1):
-                    if self.wavelet_op.mask_full_res is not None:
-                        tmp_layer3_mask.array = (
-                            self.layer2_mask[j3][j2].array
-                            + self.layer2_mask[j3][j1].array
-                        )  # mask for |I*psi2|*psi3 does not necessarily contains the one for |I*psi1|*psi3, and vice-versa
-
                     ##############################################################################
                     ############## S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3) ##############
                     ##############################################################################
-                    data_st.S4[:, :, j1, j2, j3, :, :, :] = maybe_crop(
-                        data_l1m_l2[j1][:, :, :, None]
-                    ).cov(
+                    data_st.S4[:, :, j1, j2, j3, :, :, :] = self.wavelet_op.cov(
+                        maybe_crop(data_l1m_l2[j1][:, :, :, None]),
                         maybe_crop(data_l1m_l2[j2][:, :, None]),
-                        mask=(
-                            maybe_crop(
-                                tmp_layer3_mask
-                            )  # mask for |I*psi2|*psi3 does not necessarily contains the one for |I*psi1|*psi3, and vice-versa
-                            if self.wavelet_op.mask_full_res is not None
-                            else None
-                        ),
                     )  # (Nb,Nc,L1,L2,L3)
 
             # Downsample at Nj3
@@ -483,7 +446,6 @@ class ST_Operator:
                         data=data_l1m[j2],
                         dg_out=j3 + 1,
                         inplace=True,
-                        convolved_at=j2,
                         replace_nan_value=self.replace_nan_value,
                     )  # (Nb,Nc,j3+1,L,N3)
 

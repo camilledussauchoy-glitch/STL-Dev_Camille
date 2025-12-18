@@ -84,7 +84,7 @@ class STL_2D_Kernel_Torch:
     """
 
     ###########################################################################
-    def __init__(self, array, dg=None, N0=None):
+    def __init__(self, array, dg=None, N0=None, history=[]):
         """
         Constructor, see details above. Frontend version, which assume the
         array is at N0 resolution with dg=0.
@@ -107,9 +107,10 @@ class STL_2D_Kernel_Torch:
 
         self.array = self.to_array(array)
 
-        # Find N0 value
         self.device = self.array.device
         self.dtype = self.array.dtype
+
+        self.history = history
 
     ###########################################################################
     def to_array(self, array):
@@ -160,6 +161,7 @@ class STL_2D_Kernel_Torch:
         new.dg = self.dg
         new.device = self.device
         new.dtype = self.dtype
+        new.history = self.history
 
         # Copy array
         if empty:
@@ -195,52 +197,6 @@ class STL_2D_Kernel_Torch:
         data.dtype = data.array.dtype
 
         return data
-
-    ###########################################################################
-    def mean(self, square=False, dim=(-2, -1), mask=None):
-        """
-        Compute the mean on the last two dimensions (Nx, Ny).
-        """
-        return maskmean(
-            self.array,
-            square=square,
-            dim=dim,
-            mask=mask.array if mask is not None else None,
-        )
-
-    ###########################################################################
-    def cov(self, data2=None, remove_mean=False, dim=(-2, -1), mask=None):
-        """
-        Compute the covariance between data1=self and data2 on the last two
-        dimensions (Nx, Ny).
-        """
-        x = self.array
-        if data2 is None:
-            y = x
-        else:
-            if not isinstance(data2, STL_2D_Kernel_Torch):
-                raise TypeError("data2 must be a Planar2D_kernel_torch instance.")
-            if data2.dg != self.dg:
-                raise ValueError("data2 must have the same dg as self.")
-            y = data2.array
-
-        if remove_mean:
-            raise NotImplementedError(
-                "remove_mean is not yet implemented. think about giving the right mask when doing it"
-            )
-            # x_c = x - x.mean(dim=dim, keepdim=True)
-            # y_c = y - y.mean(dim=dim, keepdim=True)
-        else:
-            x_c = x
-            y_c = y
-        cov = maskmean(
-            x_c * y_c.conj(),
-            square=False,
-            dim=dim,
-            mask=mask.array if mask is not None else None,
-        )
-
-        return cov
 
     def get_wavelet_op(
         self, J=None, L=None, kernel_size=None, mask_full_res=None, *args, **kwargs
@@ -356,6 +312,8 @@ class WavelateOperator2Dkernel_torch:
             self._reweighting_maps_wav,
             self._masks_wav_conv,
         ) = self._build_reweighting_maps()
+
+        self.layer1_mask, self.layer2_mask = self._build_scattering_layer_masks()
 
     def _build_reweighting_maps(self):
         if self.mask_full_res is None:
@@ -497,6 +455,7 @@ class WavelateOperator2Dkernel_torch:
                     ),  # will be set to True iff > 0.0 before return
                     dg=j3,
                     N0=self.mask_full_res.N0,
+                    history=[j3],
                 )
                 for j3 in range(self.J)
             }  # {J: (N3)} one mask per scale j3 at resolution dg=j3, same for all angles
@@ -507,7 +466,6 @@ class WavelateOperator2Dkernel_torch:
                         data=layer1_mask[j2].copy(),
                         dg_out=j3,
                         inplace=True,
-                        convolved_at=j2,
                         replace_nan_value=nan,
                     )
                     for j2 in range(j3 + 1)
@@ -531,16 +489,22 @@ class WavelateOperator2Dkernel_torch:
                         .squeeze(0)
                         > 0.0
                     )
-            if False:
-                import matplotlib.pyplot as plt
-
-                plt.imshow(layer1_mask[1].array.cpu().numpy()), plt.title(
-                    "layer1_mask end"
-                ), plt.show()
-                plt.imshow(layer2_mask[1][0].array.cpu().numpy()), plt.title(
-                    "layer1_mask end"
-                ), plt.show()
             return layer1_mask, layer2_mask
+
+    def _find_mask(self, data):
+        if self.mask_full_res is None:
+            return None
+        else:
+            layer = len(data.history)
+            if layer == 0:
+                raise NotImplementedError(
+                    "So far, data mask should not be called for data at layer 0."
+                )
+            assert data.dg == data.history[-1]
+            if layer == 1:
+                return self.layer1_mask[data.history[-1]].array
+            elif layer == 2:
+                return self.layer2_mask[data.history[-1]][data.history[0]].array
 
     def _build_wavelet_kernel(self, sigma=1):
         """Create a 2D Wavelet kernel."""
@@ -582,6 +546,67 @@ class WavelateOperator2Dkernel_torch:
 
         return kernel.reshape(1, self.L, self.KERNELSZ, self.KERNELSZ)
 
+    def mean(self, data, square=False, dim=(-2, -1)):
+        """
+        Compute the mean on the last two dimensions (Nx, Ny).
+        """
+        return maskmean(
+            data.array,
+            square=square,
+            dim=dim,
+            mask=self._find_mask(data),
+        )
+
+    def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1)):
+        """
+        Compute the covariance between data1=self and data2 on the last two
+        dimensions (Nx, Ny).
+        """
+        if data2 is None:
+            data2 = data1
+            mask = self._find_mask(data1)
+        else:
+            assert (
+                data1.dg == data2.dg
+            ), "data1 and data2 must have the same resolution."
+
+            # finding the appropriate mask
+            if self.mask_full_res is None:
+                mask = None
+            else:
+                if len(data1.history) > len(
+                    data2.history
+                ):  # mask for |I*psi2|*psi3 contains the one for I*psi3
+                    mask = self._find_mask(data1)
+                elif len(data1.history) < len(
+                    data2.history
+                ):  # mask for |I*psi2|*psi3 contains the one for I*psi3
+                    mask = self._find_mask(data2)
+                else:  # mask for |I*psi2|*psi3 does not necessarily contains the one for |I*psi1|*psi3, and vice-versa
+                    mask = self._find_mask(data1) + self._find_mask(data2)
+
+        x = data1.array
+        y = data2.array
+
+        if remove_mean:
+            raise NotImplementedError(
+                "remove_mean is not yet implemented. think about giving the right mask when doing it"
+            )
+            # x_c = x - x.mean(dim=dim, keepdim=True)
+            # y_c = y - y.mean(dim=dim, keepdim=True)
+        else:
+            x_c = x
+            y_c = y
+
+        cov = maskmean(
+            x_c * y_c.conj(),
+            square=False,
+            dim=dim,
+            mask=mask,
+        )
+
+        return cov
+
     def apply(self, data, j):
         """
         Apply the convolution kernel to data.array [..., Nx, Ny]
@@ -612,7 +637,9 @@ class WavelateOperator2Dkernel_torch:
 
         convolved = self.__class__._complex_conv2d_circular(x, weight)
 
-        return STL_2D_Kernel_Torch(convolved, dg=data.dg, N0=data.N0)
+        return STL_2D_Kernel_Torch(
+            convolved, dg=data.dg, N0=data.N0, history=data.history + [j]
+        )
 
     @staticmethod
     def _downsample_tensor(
@@ -666,9 +693,7 @@ class WavelateOperator2Dkernel_torch:
         return y.reshape(*leading_dims, H2, W2)
 
     ###########################################################################
-    def downsample(
-        self, data, dg_out, inplace=True, convolved_at=None, replace_nan_value=nan
-    ):
+    def downsample(self, data, dg_out, inplace=True, replace_nan_value=nan):
         """
         Downsample the data to the dg_out resolution.
         Downsampling is done in real space along the last two dimensions using (successive iterations of, if dg_out - dg > 1) torch.conv2d with stride=2.
@@ -696,6 +721,14 @@ class WavelateOperator2Dkernel_torch:
                 )
                 data.dg = dg_out
             else:  # mask
+                if len(data.history) == 0:
+                    convolved_at = None
+                else:
+                    assert (
+                        len(data.history) < 2
+                    ), "data must be at layer 0 or 1 to be downsampled."
+                    convolved_at = data.history[0]
+
                 if convolved_at is None:
                     if data.dg == 0:
                         input_data_mask = self.mask_full_res.array
