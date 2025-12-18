@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import torch
 from torch import nn
@@ -12,19 +14,33 @@ from torch.optim import LBFGS
 
 
 class ScatteringMatchModel(nn.Module):
-    def __init__(self, st_op, STLDataClass, init_shape, device=None, dtype=None):
+    def __init__(self, st_op, STLDataClass, init_shape, device, dtype):
         super().__init__()
         self.st_op = st_op
         self.STLDataClass = STLDataClass
-
-        if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if dtype is None:
-            dtype = torch.float32
+        self.init_shape = init_shape
+        self.mask_full_res = st_op.wavelet_op.mask_full_res
 
         # Learnable field u
-        self.u = STLDataClass(torch.randn(init_shape, device=device, dtype=dtype))
-        self.u = nn.Parameter(self.u.array)
+        self.u = torch.randn(init_shape, device=device, dtype=dtype)
+
+        # for security put large values which should raise abberant values if actually used
+        if self.mask_full_res is not None:
+            self.u[..., self.mask_full_res.array] = (
+                1e10  ##################################### IMPORTANT TO KEEP IN MIND
+            )
+
+        self.u.requires_grad_()
+
+        if self.mask_full_res is not None:
+
+            def freeze_hook(grad):
+                return grad * (~self.mask_full_res.array)
+
+            self.u.register_hook(freeze_hook)
+            print(
+                "NaN detected in the running synthesis mask, the synthesis takes it into account"
+            )
 
     #        self.u = nn.Parameter(
     #            st_op.wavelet_op.apply_smooth(self.u, inplace=False).array
@@ -48,19 +64,26 @@ def optimize_scattering_LBFGS(
     history_size=50,
     print_iter=10,
     verbose=True,
+    seed=None,
 ):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = st_op_running.wavelet_op.device
+    dtype = st_op_running.wavelet_op.dtype
+    print("Running synthesis on device", device, "dtype", dtype)
+
+    torch.manual_seed(seed) if seed is not None else None
+
     if np.any(np.isnan(target)):
         print("NaN detected in the target, the synthesis takes it into account")
-
-    target = torch.as_tensor(target, device=device, dtype=torch.float32)
+    target = torch.as_tensor(
+        target, device=device, dtype=dtype
+    )  # dtype is now float64 on cuda but was previously float32, if it slows down your synthesis raise us this issue !!!!!
 
     # Reference scattering
     DC_target = STLDataClass(target)
     with torch.no_grad():
         r = st_op_target.apply(DC_target, norm="store_ref").to_flatten(keepnans=True)
     r = r.detach()
-    target_coeffs_mask = ~torch.isnan(r)
+    target_coeffs_mask = ~r.isnan()
     print("synthesis on {:} ST coefficients".format(target_coeffs_mask.sum().item()))
     st_op_running.S2_ref = st_op_target.S2_ref
 
@@ -70,7 +93,7 @@ def optimize_scattering_LBFGS(
         STLDataClass=STLDataClass,
         init_shape=(nbatch, 1, *target.shape),
         device=device,
-        dtype=target.dtype,
+        dtype=dtype,
     )
 
     optimizer = LBFGS(
@@ -88,8 +111,25 @@ def optimize_scattering_LBFGS(
     def closure():
         optimizer.zero_grad()
         s_flat_u = model()
+        # assert not torch.any(s_flat_u[target_coeffs_mask].isnan()) ####################### sanity check that can be removed
         loss = ((s_flat_u[target_coeffs_mask] - r[target_coeffs_mask]).abs() ** 2).sum()
         loss.backward()
+
+        if len(loss_history) < 2:
+            if False:  ####################### set to True to debug backprop
+                import matplotlib.pyplot as plt
+
+                plt.imshow(model.u[0, 0].detach().cpu().numpy()), plt.title(
+                    "running u"
+                ), plt.colorbar(), plt.show()
+                plt.imshow(model.u.grad[0, 0].cpu().numpy()), plt.title(
+                    "running u grad"
+                ), plt.colorbar(), plt.show()
+                plt.imshow(model.u.grad[0, 0].cpu().numpy() == 0), plt.title(
+                    "running u grad == 0"
+                ), plt.colorbar(), plt.show()
+
+        # assert model.u.grad.isnan().sum().cpu().item() == 0 ####################### sanity check that can be removed
 
         # Log à chaque appel interne
         loss_val = loss.item()
@@ -100,10 +140,21 @@ def optimize_scattering_LBFGS(
 
         return loss
 
+    start = time.perf_counter()
     # Un seul appel : toutes les itérations LBFGS internes sont faites ici
     optimizer.step(closure)
+    end = time.perf_counter()
+
+    print(
+        "{:} iterations of synthesis done with nbatch={:} and {:} ST coefficients".format(
+            len(loss_history), nbatch, target_coeffs_mask.sum().item()
+        )
+    )
+    print(f"Execution time: {end - start:.3f} s")
 
     u_opt = model.u.detach()
+    if st_op_running.wavelet_op.mask_full_res is not None:
+        u_opt[..., st_op_running.wavelet_op.mask_full_res.array] = torch.nan
 
     if nbatch == 1:
         u_opt = u_opt[0, 0]
