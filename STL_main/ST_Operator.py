@@ -6,8 +6,8 @@ Tentative proposal by EA
 """
 
 import numpy as np
-import torch as bk  # from_numpy, zeros, dim, shape, nan
 
+import STL_main.torch_backend as bk  # from_numpy, zeros, dim, shape, nan
 from STL_main.ST_Statistics import ST_Statistics
 
 ###############################################################################
@@ -102,7 +102,7 @@ class ST_Operator:
         jmax=None,
         dj=None,
         pbc=True,
-        mask=None,
+        replace_nan_value=bk.nan,
         norm="S2",
         S2_ref=None,
         iso=False,
@@ -115,7 +115,9 @@ class ST_Operator:
         j_to_dg=None,
         Single_Kernel=None,
         mask_st=None,
-        mask_opt=False,
+        # Optional wavelet operator args
+        downsample_nan_weight_threshold=None,
+        get_crop_border_size_method=None,
     ):
         """
         Constructor, see details above.
@@ -125,8 +127,18 @@ class ST_Operator:
         self.N0 = data.N0
 
         # Wavelet transform and related parameters
+        wavelet_op_kwargs = {}
+        if downsample_nan_weight_threshold is not None:
+            wavelet_op_kwargs["downsample_nan_weight_threshold"] = (
+                downsample_nan_weight_threshold
+            )
+        if get_crop_border_size_method is not None:
+            wavelet_op_kwargs["get_crop_border_size_method"] = (
+                get_crop_border_size_method
+            )
+
         self.wavelet_op = data.get_wavelet_op(
-            J=J, L=L
+            J=J, L=L, **wavelet_op_kwargs
         )  # Wavelet_Operator(DT, N0, J, L, WType)
         self.J = self.wavelet_op.J
         self.L = self.wavelet_op.L
@@ -139,6 +151,7 @@ class ST_Operator:
         self.jmax = jmax
         self.dj = dj
         self.pbc = pbc
+        self.replace_nan_value = replace_nan_value
 
         # Additional transform/compression related parameters
         self.norm = norm
@@ -202,7 +215,6 @@ class ST_Operator:
         jmax=None,
         dj=None,
         pbc=None,
-        pass_mask=False,
         norm=None,
         S2_ref=None,
         iso=None,
@@ -332,18 +344,17 @@ class ST_Operator:
             self.wavelet_op,
         )
 
-        # Define the mask for conv computation if necessary
-        if not pbc:
-            raise
-
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
         if self.SC == "ScatCov":
             data_st.S1 = bk.zeros((Nb, Nc, J, L))
             data_st.S2 = bk.zeros((Nb, Nc, J, L))
-            data_st.S3 = bk.zeros((Nb, Nc, J, J, L, L), dtype=bk.complex128) + bk.nan
+            data_st.S3 = (
+                bk.zeros((Nb, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
+            )
             data_st.S4 = (
-                bk.zeros((Nb, Nc, J, J, J, L, L, L), dtype=bk.complex128) + bk.nan
+                bk.zeros((Nb, Nc, J, J, J, L, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
+                + bk.nan
             )
 
         ########################################
@@ -368,37 +379,80 @@ class ST_Operator:
             # Compute first convolution and modulus
             data_l1 = self.wavelet_op.apply(l_data, j=j3)  # (Nb,Nc,L,N3)
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
-            # Compute S1 and S2
 
-            data_st.S1[:, :, j3, :] = data_l1m[j3].mean()  # (Nb,Nc,J,L)
-            data_st.S2[:, :, j3, :] = data_l1m[j3].mean(square=True)  # (Nb,Nc,J,L)
+            if False and self.wavelet_op.mask_full_res is not None:
+                import torch
 
-            data_l1m_l2m = {}
+                assert torch.all(
+                    data_l1m[j3].array.isnan() == self.layer1_mask[j3].array
+                )  ###################### GOOD TO KEEP WHILE DEBUGGING with replace_nan_value=torch.nan
+
+            ##############################################################################
+            ########################## S1(j3) = Mean(|I*psi3|) ###########################
+            ##############################################################################
+            data_st.S1[:, :, j3, :] = self.wavelet_op.mean(
+                data_l1m[j3], pbc=pbc
+            )  # (Nb,Nc,L)
+
+            ##############################################################################
+            ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
+            ##############################################################################
+            data_st.S2[:, :, j3, :] = self.wavelet_op.mean(
+                data_l1m[j3], square=True, pbc=pbc
+            )  # (Nb,Nc,L)
+
+            data_l1m_l2 = {}
             for j2 in range(j3 + 1):
-                data_l1m_l2 = self.wavelet_op.apply(
-                    data_l1m[j2], j=j3
-                )  # (Nb,Nc,L2,L3,N3) #################################### can be fully filled with nans
-                # S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3)
-                data_st.S3[:, :, j2, j3, :, :] = data_l1m_l2.cov(
-                    data_l1[:, :, None]
-                )  # (Nb,Nc, L3,N3)
 
-                data_l1m_l2m[j2] = data_l1m_l2.modulus(inplace=False)  # (Nb,Nc,L,N3)
+                data_l1m_l2_j2 = self.wavelet_op.apply(
+                    data_l1m[j2], j=j3
+                )  # (Nb,Nc,L2,L3,N3)
+
+                if False and self.wavelet_op.mask_full_res is not None:
+                    assert torch.all(
+                        data_l1m_l2_j2.array.isnan() == self.layer2_mask[j3][j2].array
+                    )  ###################### GOOD TO KEEP WHILE DEBUGGING with replace_nan_value=torch.nan
+                    assert torch.all(
+                        self.layer2_mask[j3][j2].array >= self.layer1_mask[j3].array
+                    )  ###################### sanity check to make sure mask for |I*psi2|*psi3 contains the one for I*psi3
+
+                ##############################################################################
+                ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
+                ##############################################################################
+                data_st.S3[:, :, j2, j3, :, :] = self.wavelet_op.cov(
+                    data_l1m_l2_j2,
+                    data_l1[:, :, None],
+                    pbc=pbc,
+                )  # (Nb,Nc,L2,L3)
+
+                data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
 
                 for j1 in range(j2 + 1):
-                    # S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3)
-                    data_st.S4[:, :, j1, j2, j3, :, :, :] = data_l1m_l2m[j1][
-                        :, :, None
-                    ].cov(data_l1m_l2m[j2][:, :, :, None])
+                    ##############################################################################
+                    ############## S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3) ##############
+                    ##############################################################################
+                    data_st.S4[:, :, j1, j2, j3, :, :, :] = self.wavelet_op.cov(
+                        data_l1m_l2[j1][:, :, :, None],
+                        data_l1m_l2[j2][:, :, None],
+                        pbc=pbc,
+                    )  # (Nb,Nc,L1,L2,L3)
 
-            if data_st.DT != "2D_FFT_Torch":
-                # Downsample at Nj3
+            # Downsample at Nj3
+            if (data_st.DT != "2D_FFT_Torch") and j3 < J - 1:
+
                 self.wavelet_op.downsample(
-                    data=l_data, dg_out=j3 + 1, inplace=True
+                    data=l_data,
+                    dg_out=j3 + 1,
+                    inplace=True,
+                    replace_nan_value=self.replace_nan_value,
                 )  # (Nb,Nc,j3+1,L,N3)
+
                 for j2 in range(j3 + 1):
                     self.wavelet_op.downsample(
-                        data=data_l1m[j2], dg_out=j3 + 1, inplace=True
+                        data=data_l1m[j2],
+                        dg_out=j3 + 1,
+                        inplace=True,
+                        replace_nan_value=self.replace_nan_value,
                     )  # (Nb,Nc,j3+1,L,N3)
 
         ########################################
@@ -430,178 +484,3 @@ class ST_Operator:
             data_st.flatten(mask_st)
 
         return data_st
-
-    #########################################
-    def additional_ST_Computation(self):
-        """
-
-
-
-
-        Returns
-        -------
-        None.
-
-        """
-
-        ########################################
-        # ST coefficients computation
-        ########################################
-
-        # These are the ST statistics computations that were first implemented
-        # by EA, and were debugged by IH and EG, but not cleaned.
-
-        # I give here 4 different ST computations, for illustration purpose.
-        # They are without npbc, masks, jmin, jmax, dj...
-        # We assume that scales increase with j.
-        # We only do a first convolution at all scales, without a MR framework.
-
-        # --- Compute first convolution and modulus ---
-        data_l1 = self.wavelet_op.apply(data)  # (Nb,Nc,J,L,N)
-        data_l1m = data_l1.modulus_func(copy=True)  # (Nb,Nc,J,L,N)
-
-        # --- Compute S1 and S2 ---
-        data_st.S1 = data_l1m.mean_func()  # (Nb,Nc,J,L)
-        data_st.S2 = data_l1m.mean_func(square=True)  # (Nb,Nc,J,L)
-
-        ################################
-        ### Higher order computation ###
-        ################################
-
-        # --- Version vanilla ---
-        # Vanilla version uses the following form for S3 and S4
-        # S3 = Cov(|I*psi1|*psi2, I*psi2)
-        # S4 = Cov(|I*psi1|*psi3, |I*psi2|*psi3)
-
-        for j3 in range(J):
-            # Scale smaller-eq to j3 whose [I*psi| will be convolved at j3
-            # data_l1.array = data_l1.array[:,:,:j3+1]          #(Nb,Nc,j3+1,L,N)
-            # data_l1m.array = data_l1m.array[:,:,:j3+1]        #(Nb,Nc,j3+1,L,N)
-            data_l1_tmp = data_l1.copy()  # (Nb,Nc,j3+1,L,N)
-            data_l1m_tmp = data_l1m.copy()
-            # (Nb,Nc,j3+1,L,N)
-            data_l1_tmp.array = data_l1_tmp.array[:, :, : j3 + 1]
-            data_l1m_tmp.array = data_l1m_tmp.array[:, :, : j3 + 1]
-
-            # Downsample at Nj3
-            data_l1_tmp.downsample(j3)  # (Nb,Nc,j3+1,L,N3)
-            data_l1m_tmp.downsample(j3)  # (Nb,Nc,j3+1,L,N3)
-
-            # Compute |I*psi2|*psi3                      #(Nb,Nc,j3+1,L2,L3,N3)
-            data_l1m_l2 = self.wavelet_op.apply(data_l1m_tmp, j=j3)
-
-            for j2 in range(j3 + 1):
-                # S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3)
-                data_st.S3_1[:, :, j2, j3, :, :] = data_l1m_l2[:, :, j2].cov_func(
-                    data_l1_tmp[:, :, j3, None]
-                )  # (Nb,Nc,L2,L3,N3) x (Nb,Nc,1,L3,N3)
-
-                for j1 in range(j2 + 1):
-                    # S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3)
-                    data_st.S4_1[:, :, j1, j2, j3, :, :, :] = data_l1m_l2[
-                        :, :, j1, :, None
-                    ].cov_func(
-                        data_l1m_l2[:, :, j2, None, :]
-                    )  # (Nb,Nc,L1, 1,L3,N3) x (Nb,Nc, 1,L2,L3,N3)
-
-        # --- Version batchée ---
-
-        for j3 in range(J):
-            # Scale smaller-eq to j3 whose [I*psi| will be convolved at j3
-            # data_l1.array = data_l1.array[:,:,:j3+1]          #(Nb,Nc,j3+1,L,N)
-            # data_l1m.array = data_l1m.array[:,:,:j3+1]        #(Nb,Nc,j3+1,L,N)
-            data_l1_tmp = data_l1.copy()  # (Nb,Nc,j3+1,L,N)
-            data_l1m_tmp = data_l1m.copy()
-            # (Nb,Nc,j3+1,L,N)
-            data_l1_tmp.array = data_l1_tmp.array[:, :, : j3 + 1]
-            data_l1m_tmp.array = data_l1m_tmp.array[:, :, : j3 + 1]
-
-            # Downsample at Nj3
-            # data_l1.downsample(j_to_dg[j3])                  #(Nb,Nc,j3+1,L,N3)
-            # data_l1m.downsample(j_to_dg[j3])                 #(Nb,Nc,j3+1,L,N3)
-            data_l1_tmp.downsample(j3)  # (Nb,Nc,j3+1,L,N3)
-            data_l1m_tmp.downsample(j3)  # (Nb,Nc,j3+1,L,N3)
-
-            # Compute |I*psi2|*psi3                      #(Nb,Nc,j3+1,L2,L3,N3)
-            data_l1m_l2 = self.wavelet_op.apply(data_l1m_tmp, j=j3)
-
-            # S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3)
-            data_st.S3_2[:, :, : j3 + 1, j3, :, :] = data_l1m_l2[
-                :, :, : j3 + 1
-            ].cov_func(
-                data_l1_tmp[:, :, j3, None, None]
-            )  # (Nb,Nc,j3+1,L2,L3,N3) x (Nb,Nc, 1, 1,L3,N3)
-
-            for j2 in range(j3 + 1):
-                # S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3)
-                data_st.S4_2[:, :, : j2 + 1, j2, j3, :, :, :] = data_l1m_l2[
-                    :, :, : j2 + 1, :, None
-                ].cov_func(
-                    data_l1m_l2[:, :, j2, None, None, :]
-                )  # (Nb,Nc,j2+1,L1, 1,L3,N3) x (Nb,Nc,   1, 1,L2,L3,N3)
-
-        # ---  Version Sihao (adaptée) ---
-        # This version uses the following form for S3 and S4
-        # S3 = Cov(|I*psi1|, I*psi2)
-        # S4 = Cov(|I*psi1|, |I*psi2|*psi3)
-
-        for j3 in range(J):
-            # Scale smaller-eq to j3 whose [I*psi| will be convolved at j3
-            # data_l1m.array = data_l1m.array[:,:,:j3+1]          #(Nb,Nc,j3+1,L,N)
-            # # Downsample at Nj3
-            # data.downsample(j_to_dg[j3])                            #(Nb,Nc,N3)
-            # data_l1m.downsample(j_to_dg[j3])                 #(Nb,Nc,j3+1,L,N3)
-            data_tmp = data.copy()
-            data_l1m_tmp = data_l1m.copy()
-            data_l1m_tmp.array = data_l1m_tmp.array[:, :, : j3 + 1]
-
-            # Downsample at Nj3
-            data_tmp.downsample(j3)
-            data_l1m_tmp.downsample(j3)  # (Nb,Nc,j3+1,L,N3)
-
-            for j2 in range(j3 + 1):
-                # Compute |I*psi2|*psi3                       #(Nb,Nc,L2,L3,N3)
-                data_l1m_l2 = self.wavelet_op.apply(data_l1m_tmp[:, :, j2], j3)
-
-                # S3(j2,j3) = Cov(I, |I*psi2|*psi3)
-                data_st.S3_3[:, :, j2, j3, :, :] = data_tmp[:, :, None, None].cov_func(
-                    data_l1m_l2
-                )  # (Nb,Nc, 1, 1,N3) x (Nb,Nc,L2,L3,N3)
-
-                for j1 in range(j2 + 1):
-                    # S4(j1,j2,j3) = Cov(|I*psi1|, |I*psi2|*psi3)
-                    data_st.S4_3[:, :, j1, j2, j3, :, :, :] = data_l1m_tmp[
-                        :, :, j1, :, None, None
-                    ].cov_func(
-                        data_l1m_l2[:, :, None, :, :]
-                    )  # (Nb,Nc,L1, 1, 1,N3) x (Nb,Nc, 1,L2,L3,N3)
-
-        # ---  Version Sihao (adaptée) + batchée ---
-
-        for j3 in range(J):
-            # Scale smaller-eq to j3 whose [I*psi| will be convolved at j3
-            data_tmp = data.copy()
-            data_l1m_tmp = data_l1m.copy()
-            data_l1m_tmp.array = data_l1m_tmp.array[:, :, : j3 + 1]
-
-            # Downsample at Nj3
-            data_tmp.downsample(j3)
-            data_l1m_tmp.downsample(j3)  # (Nb,Nc,j3+1,L,N3)
-
-            # Compute |I*psi2|*psi3                     #(Nb,Nc,:j3+1,L2,L3,N3)
-            data_l1m_l2 = self.wavelet_op.apply(data_l1m_tmp, j3)
-
-            # S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3)
-            data_st.S3_4[:, :, : j3 + 1, j3, :, :] = data_tmp[
-                :, :, None, None, None
-            ].cov_func(
-                data_l1m_l2[:, :, : j3 + 1]
-            )  # (Nb,Nc,   1, 1, 1,N3) x (Nb,Nc,j3+1,L2,L3,N3)
-
-            for j2 in range(j3 + 1):
-                # S4(j1,j2,j3) = Cov(|I*psi1|, |I*psi2|*psi3)
-                data_st.S4_4[:, :, : j2 + 1, j2, j3, :, :, :] = data_l1m_tmp[
-                    :, :, : j2 + 1, :, None, None
-                ].cov_func(
-                    data_l1m_l2[:, :, j2, None, None]
-                )  # (Nb,Nc,j2+1,L1  1, 1,N3) x (Nb,Nc,   1, 1,L2,L3,N3)
