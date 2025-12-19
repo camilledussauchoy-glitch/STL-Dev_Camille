@@ -102,7 +102,6 @@ class ST_Operator:
         jmax=None,
         dj=None,
         pbc=True,
-        downsample_nan_weight_threshold=None,
         replace_nan_value=bk.nan,
         norm="S2",
         S2_ref=None,
@@ -116,6 +115,9 @@ class ST_Operator:
         j_to_dg=None,
         Single_Kernel=None,
         mask_st=None,
+        # Optional wavelet operator args
+        downsample_nan_weight_threshold=None,
+        get_crop_border_size_method=None,
     ):
         """
         Constructor, see details above.
@@ -125,11 +127,16 @@ class ST_Operator:
         self.N0 = data.N0
 
         # Wavelet transform and related parameters
-        wavelet_op_kwargs = (
-            {"downsample_nan_weight_threshold": downsample_nan_weight_threshold}
-            if downsample_nan_weight_threshold is not None
-            else {}
-        )
+        wavelet_op_kwargs = {}
+        if downsample_nan_weight_threshold is not None:
+            wavelet_op_kwargs["downsample_nan_weight_threshold"] = (
+                downsample_nan_weight_threshold
+            )
+        if get_crop_border_size_method is not None:
+            wavelet_op_kwargs["get_crop_border_size_method"] = (
+                get_crop_border_size_method
+            )
+
         self.wavelet_op = data.get_wavelet_op(
             J=J, L=L, **wavelet_op_kwargs
         )  # Wavelet_Operator(DT, N0, J, L, WType)
@@ -337,9 +344,6 @@ class ST_Operator:
             self.wavelet_op,
         )
 
-        # Define the cropping for conv computation if necessary
-        maybe_crop = (lambda x: x) if pbc else self.wavelet_op._apply_crop
-
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
         if self.SC == "ScatCov":
@@ -387,14 +391,14 @@ class ST_Operator:
             ########################## S1(j3) = Mean(|I*psi3|) ###########################
             ##############################################################################
             data_st.S1[:, :, j3, :] = self.wavelet_op.mean(
-                maybe_crop(data_l1m[j3])
+                data_l1m[j3], pbc=pbc
             )  # (Nb,Nc,L)
 
             ##############################################################################
             ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
             ##############################################################################
             data_st.S2[:, :, j3, :] = self.wavelet_op.mean(
-                maybe_crop(data_l1m[j3]), square=True
+                data_l1m[j3], square=True, pbc=pbc
             )  # (Nb,Nc,L)
 
             data_l1m_l2 = {}
@@ -416,8 +420,9 @@ class ST_Operator:
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
                 data_st.S3[:, :, j2, j3, :, :] = self.wavelet_op.cov(
-                    maybe_crop(data_l1m_l2_j2),
-                    maybe_crop(data_l1[:, :, None]),
+                    data_l1m_l2_j2,
+                    data_l1[:, :, None],
+                    pbc=pbc,
                 )  # (Nb,Nc,L2,L3)
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
@@ -427,8 +432,9 @@ class ST_Operator:
                     ############## S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3) ##############
                     ##############################################################################
                     data_st.S4[:, :, j1, j2, j3, :, :, :] = self.wavelet_op.cov(
-                        maybe_crop(data_l1m_l2[j1][:, :, :, None]),
-                        maybe_crop(data_l1m_l2[j2][:, :, None]),
+                        data_l1m_l2[j1][:, :, :, None],
+                        data_l1m_l2[j2][:, :, None],
+                        pbc=pbc,
                     )  # (Nb,Nc,L1,L2,L3)
 
             # Downsample at Nj3

@@ -84,7 +84,7 @@ class STL_2D_Kernel_Torch:
     """
 
     ###########################################################################
-    def __init__(self, array, dg=None, N0=None, history=[]):
+    def __init__(self, array, dg=None, N0=None, conv_history=[]):
         """
         Constructor, see details above. Frontend version, which assume the
         array is at N0 resolution with dg=0.
@@ -110,7 +110,7 @@ class STL_2D_Kernel_Torch:
         self.device = self.array.device
         self.dtype = self.array.dtype
 
-        self.history = history
+        self.conv_history = conv_history
 
     ###########################################################################
     def to_array(self, array):
@@ -161,7 +161,7 @@ class STL_2D_Kernel_Torch:
         new.dg = self.dg
         new.device = self.device
         new.dtype = self.dtype
-        new.history = self.history
+        new.conv_history = self.conv_history
 
         # Copy array
         if empty:
@@ -274,6 +274,52 @@ class WavelateOperator2Dkernel_torch:
         else:
             return real_part
 
+    @staticmethod
+    def _get_crop_border_size_largest_scale_second_layer(data, pbc, wavelet_op):
+        if pbc:
+            return 0
+        else:
+            deepest_layer = 2
+            return (
+                deepest_layer
+                * 2 ** (wavelet_op.J - 1 - data.dg)
+                * (wavelet_op.KERNELSZ // 2)
+            )
+
+    @staticmethod
+    def _get_crop_border_size_largest_scale_layer_flexible(data, pbc, wavelet_op):
+        if pbc or len(data.conv_history) == 0:
+            return 0
+        else:
+            return (
+                len(data.conv_history)
+                * 2 ** (wavelet_op.J - 1 - data.dg)
+                * (wavelet_op.KERNELSZ // 2)
+            )
+
+    @staticmethod
+    def _get_crop_border_size_fully_flexible(data, pbc, wavelet_op):
+        if pbc or len(data.conv_history) == 0:
+            return 0
+        elif len(data.conv_history) == 1:
+            return max(
+                1,
+                int(2 ** (data.conv_history[0] - data.dg) * (wavelet_op.KERNELSZ // 2)),
+            )
+        elif len(data.conv_history) == 2:
+            return max(
+                1,
+                int(
+                    (
+                        2 ** (data.conv_history[0] - data.dg)
+                        + 2 ** (data.conv_history[1] - data.dg)
+                    )
+                    * (wavelet_op.KERNELSZ // 2)
+                ),
+            )
+        else:
+            raise ValueError("Invalid data conv_history.")
+
     def __init__(
         self,
         kernel_size: int,
@@ -284,6 +330,7 @@ class WavelateOperator2Dkernel_torch:
         dtype=_DEFAULT_DTYPE,
         sigma_smooth=1.0,
         downsample_nan_weight_threshold=0.33,
+        get_crop_border_size_method=None,
     ):
         self.KERNELSZ = kernel_size
         self.L = L
@@ -314,6 +361,13 @@ class WavelateOperator2Dkernel_torch:
         ) = self._build_reweighting_maps()
 
         self.layer1_mask, self.layer2_mask = self._build_scattering_layer_masks()
+
+        if get_crop_border_size_method is not None:
+            self._get_crop_border_size_method = get_crop_border_size_method
+        else:
+            self._get_crop_border_size_method = (
+                self.__class__._get_crop_border_size_fully_flexible  # TODO: so far no method accounts for smooth kernel!!!
+            )
 
     def _build_reweighting_maps(self):
         if self.mask_full_res is None:
@@ -455,7 +509,7 @@ class WavelateOperator2Dkernel_torch:
                     ),  # will be set to True iff > 0.0 before return
                     dg=j3,
                     N0=self.mask_full_res.N0,
-                    history=[j3],
+                    conv_history=[j3],
                 )
                 for j3 in range(self.J)
             }  # {J: (N3)} one mask per scale j3 at resolution dg=j3, same for all angles
@@ -495,16 +549,18 @@ class WavelateOperator2Dkernel_torch:
         if self.mask_full_res is None:
             return None
         else:
-            layer = len(data.history)
+            layer = len(data.conv_history)
             if layer == 0:
                 raise NotImplementedError(
                     "So far, data mask should not be called for data at layer 0."
                 )
-            assert data.dg == data.history[-1]
+            assert data.dg == data.conv_history[-1]
             if layer == 1:
-                return self.layer1_mask[data.history[-1]].array
+                return self.layer1_mask[data.conv_history[-1]].array
             elif layer == 2:
-                return self.layer2_mask[data.history[-1]][data.history[0]].array
+                return self.layer2_mask[data.conv_history[-1]][
+                    data.conv_history[0]
+                ].array
 
     def _build_wavelet_kernel(self, sigma=1):
         """Create a 2D Wavelet kernel."""
@@ -546,18 +602,62 @@ class WavelateOperator2Dkernel_torch:
 
         return kernel.reshape(1, self.L, self.KERNELSZ, self.KERNELSZ)
 
-    def mean(self, data, square=False, dim=(-2, -1)):
+    def _crop(self, array, border):
+        """
+        Crops an array by removing 'border' pixels from each side
+        along the last two dimensions.
+
+        Parameters
+        ----------
+        array : torch.Tensor
+            Input array to be cropped.
+        border : int
+            Number of pixels to remove from each side.
+        Returns
+        -------
+        torch.Tensor
+            Cropped array.
+        """
+        if array is None:
+            return None
+        elif border == 0:
+            return array
+        else:
+            # handling of borders larger than array can be adapted depending on desired behavior
+            if False:  # conservative handling of borders larger than array
+                assert array.shape[-2] > 2 * border
+                assert array.shape[-1] > 2 * border
+            elif False:  # flexible handling of borders larger than array
+                if min(array.shape[-2:]) <= 2 * border:
+                    if not getattr(
+                        self, "_border_warning_raised", False
+                    ):  # warns the user only once per wavelate operator
+                        print(
+                            "Warning! Data with shape {:} too small to be cropped with border {:}. Using border={:} instead.".format(
+                                array.detach().cpu().numpy().shape[-2:],
+                                border,
+                                (min(array.shape[-2:]) - 1) // 2,
+                            )
+                        )
+                        self._border_warning_raised = True
+                    border = (min(array.shape[-2:]) - 1) // 2
+            else:  # simple handling of borders larger than array: maskmean will return nan
+                pass
+            return array[..., border:-border, border:-border]
+
+    def mean(self, data, square=False, dim=(-2, -1), pbc=True):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         """
+        border = self._get_crop_border_size_method(data=data, pbc=pbc, wavelet_op=self)
         return maskmean(
-            data.array,
+            x=self._crop(array=data.array, border=border),
             square=square,
             dim=dim,
-            mask=self._find_mask(data),
+            mask=self._crop(array=self._find_mask(data), border=border),
         )
 
-    def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1)):
+    def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1), pbc=True):
         """
         Compute the covariance between data1=self and data2 on the last two
         dimensions (Nx, Ny).
@@ -565,6 +665,7 @@ class WavelateOperator2Dkernel_torch:
         if data2 is None:
             data2 = data1
             mask = self._find_mask(data1)
+            border = self._get_crop_border_size(data1, pbc)
         else:
             assert (
                 data1.dg == data2.dg
@@ -574,16 +675,21 @@ class WavelateOperator2Dkernel_torch:
             if self.mask_full_res is None:
                 mask = None
             else:
-                if len(data1.history) > len(
-                    data2.history
+                if len(data1.conv_history) > len(
+                    data2.conv_history
                 ):  # mask for |I*psi2|*psi3 contains the one for I*psi3
                     mask = self._find_mask(data1)
-                elif len(data1.history) < len(
-                    data2.history
+                elif len(data1.conv_history) < len(
+                    data2.conv_history
                 ):  # mask for |I*psi2|*psi3 contains the one for I*psi3
                     mask = self._find_mask(data2)
                 else:  # mask for |I*psi2|*psi3 does not necessarily contains the one for |I*psi1|*psi3, and vice-versa
                     mask = self._find_mask(data1) + self._find_mask(data2)
+
+            border = max(
+                self._get_crop_border_size_method(data=data1, pbc=pbc, wavelet_op=self),
+                self._get_crop_border_size_method(data=data2, pbc=pbc, wavelet_op=self),
+            )
 
         x = data1.array
         y = data2.array
@@ -599,10 +705,10 @@ class WavelateOperator2Dkernel_torch:
             y_c = y
 
         cov = maskmean(
-            x_c * y_c.conj(),
+            x=self._crop(array=x_c * y_c.conj(), border=border),
             square=False,
             dim=dim,
-            mask=mask,
+            mask=self._crop(array=mask, border=border),
         )
 
         return cov
@@ -638,7 +744,7 @@ class WavelateOperator2Dkernel_torch:
         convolved = self.__class__._complex_conv2d_circular(x, weight)
 
         return STL_2D_Kernel_Torch(
-            convolved, dg=data.dg, N0=data.N0, history=data.history + [j]
+            convolved, dg=data.dg, N0=data.N0, conv_history=data.conv_history + [j]
         )
 
     @staticmethod
@@ -721,13 +827,13 @@ class WavelateOperator2Dkernel_torch:
                 )
                 data.dg = dg_out
             else:  # mask
-                if len(data.history) == 0:
+                if len(data.conv_history) == 0:
                     convolved_at = None
                 else:
                     assert (
-                        len(data.history) < 2
+                        len(data.conv_history) < 2
                     ), "data must be at layer 0 or 1 to be downsampled."
-                    convolved_at = data.history[0]
+                    convolved_at = data.conv_history[0]
 
                 if convolved_at is None:
                     if data.dg == 0:
@@ -805,10 +911,3 @@ class WavelateOperator2Dkernel_torch:
             # _conv2d_circular expects w shape (O_c, wx, wy)
             self._smooth_kernel_5x5 = kernel
         return self._smooth_kernel_5x5
-
-    def _apply_crop(self, data):
-        return data[
-            ...,
-            self.KERNELSZ // 2 : -self.KERNELSZ // 2,
-            self.KERNELSZ // 2 : -self.KERNELSZ // 2,
-        ]
