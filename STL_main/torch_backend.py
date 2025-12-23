@@ -195,7 +195,7 @@ def maskmean(x, square=False, dim=(-2, -1), mask=None):
         count = (
             (~mask).sum() if dim is None else (~mask).sum(dim=dim)
         )  ########################################## can be improved in the future by normalizing masks once for all beforehand
-        assert count != 0, "mask is full of NaNs, cannot compute mean"
+        # assert count != 0, "mask is full of NaNs, cannot compute mean"
         return (x_masked.sum() if dim is None else x_masked.sum(dim=dim)) / count
 
 

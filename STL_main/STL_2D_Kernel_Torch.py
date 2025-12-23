@@ -192,14 +192,21 @@ class STL_2D_Kernel_Torch:
         """
         data = self.copy(empty=False) if not inplace else self
 
-        data.array = torch.abs(data.array)
+        data.array = data.array.abs()
 
         data.dtype = data.array.dtype
 
         return data
 
     def get_wavelet_op(
-        self, J=None, L=None, kernel_size=None, mask_full_res=None, *args, **kwargs
+        self,
+        J=None,
+        L=None,
+        kernel_size=None,
+        mask_full_res=None,
+        pbc=True,
+        *args,
+        **kwargs,
     ):
         if L is None:
             L = 4
@@ -208,23 +215,32 @@ class STL_2D_Kernel_Torch:
         if J is None:
             J = np.min([int(np.log2(self.N0[0])), int(np.log2(self.N0[1]))]) - 2
         if mask_full_res is None:
-            if torch.any(self.array.isnan()):
+            if torch.any(self.array.isnan()) or not pbc:
                 mask_full_res = self.array.isnan()
-        return WavelateOperator2Dkernel_torch(
+        return WaveletOperator2Dkernel_torch(
             kernel_size,
             L,
             J,
             device=self.array.device,
             dtype=self.array.dtype,
             mask_full_res=mask_full_res,
+            pbc=pbc,
             *args,
             **kwargs,
         )
 
 
-class WavelateOperator2Dkernel_torch:
+class WaveletOperator2Dkernel_torch:
     @staticmethod
-    def _conv2d_circular(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+    def _get_padding_mode(pbc: bool = True) -> str:
+        return (
+            "circular" if pbc else "replicate"
+        )  # most suited option for non-PBC, better than 'constant' and 'reflect'
+
+    @staticmethod
+    def _conv2d_circular(
+        x: torch.Tensor, w: torch.Tensor, padding_mode: str
+    ) -> torch.Tensor:
         """
         Backend-style 2D convolution mirroring FoCUS/BkTorch strategy.
 
@@ -251,28 +267,31 @@ class WavelateOperator2Dkernel_torch:
         pad_x = wx // 2
         pad_y = wy // 2
 
-        x_padded = F.pad(x4d, (pad_y, pad_y, pad_x, pad_x), mode="circular")
+        x_padded = F.pad(x4d, (pad_y, pad_y, pad_x, pad_x), mode=padding_mode)
         y = F.conv2d(x_padded, weight)
 
         return y.reshape(*leading_dims, O_c, Nx, Ny)
 
     @classmethod
-    def _complex_conv2d_circular(cls, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-        """Complex-aware wrapper around ``_conv2d_circular``."""
+    def _semicomplex_conv2d_circular(
+        cls, x: torch.Tensor, w: torch.Tensor, padding_mode: str
+    ) -> torch.Tensor:
+        """Semicomplex-aware wrapper around ``_conv2d_circular``."""
 
-        xr = torch.real(x) if torch.is_complex(x) else x
-        xi = torch.imag(x) if torch.is_complex(x) else torch.zeros_like(xr)
+        assert not torch.is_complex(x)
+        assert torch.is_complex(w)
 
-        wr = torch.real(w) if torch.is_complex(w) else w
-        wi = torch.imag(w) if torch.is_complex(w) else torch.zeros_like(wr)
+        wr = torch.real(w)  # if torch.is_complex(w) else w
+        wi = torch.imag(w)  # if torch.is_complex(w) else torch.zeros_like(wr)
 
-        real_part = cls._conv2d_circular(xr, wr) - cls._conv2d_circular(xi, wi)
-        imag_part = cls._conv2d_circular(xr, wi) + cls._conv2d_circular(xi, wr)
+        real_part = cls._conv2d_circular(
+            x, wr, padding_mode=padding_mode
+        )  # - cls._conv2d_circular(xi, wi)
+        imag_part = cls._conv2d_circular(
+            x, wi, padding_mode=padding_mode
+        )  # + cls._conv2d_circular(xi, wr)
 
-        if torch.is_complex(x) or torch.is_complex(w):
-            return torch.complex(real_part, imag_part)
-        else:
-            return real_part
+        return torch.complex(real_part, imag_part)
 
     @staticmethod
     def _get_crop_border_size_largest_scale_second_layer(data, pbc, wavelet_op):
@@ -302,23 +321,30 @@ class WavelateOperator2Dkernel_torch:
         if pbc or len(data.conv_history) == 0:
             return 0
         elif len(data.conv_history) == 1:
-            return max(
-                1,
-                int(2 ** (data.conv_history[0] - data.dg) * (wavelet_op.KERNELSZ // 2)),
+            return int(
+                np.ceil(
+                    2 ** (data.conv_history[0] - data.dg) * (wavelet_op.KERNELSZ // 2)
+                )
             )
         elif len(data.conv_history) == 2:
-            return max(
-                1,
-                int(
-                    (
-                        2 ** (data.conv_history[0] - data.dg)
-                        + 2 ** (data.conv_history[1] - data.dg)
-                    )
+            first_conv_border_downgraded = int(
+                np.ceil(
+                    2 ** (data.conv_history[0] - data.conv_history[-1])
                     * (wavelet_op.KERNELSZ // 2)
-                ),
+                )
+            )
+            return int(
+                np.ceil(
+                    2 ** (data.conv_history[-1] - data.dg)
+                    * (first_conv_border_downgraded + wavelet_op.KERNELSZ // 2)
+                )
             )
         else:
             raise ValueError("Invalid data conv_history.")
+
+    @staticmethod
+    def _get_crop_border_size_zero(data, pbc, wavelet_op):
+        return 0
 
     def __init__(
         self,
@@ -326,8 +352,9 @@ class WavelateOperator2Dkernel_torch:
         L: int,
         J: int,
         device=_DEFAULT_DEVICE,
-        mask_full_res=None,
         dtype=_DEFAULT_DTYPE,
+        mask_full_res=None,
+        pbc=True,
         sigma_smooth=1.0,
         downsample_nan_weight_threshold=0.33,
         get_crop_border_size_method=None,
@@ -346,6 +373,20 @@ class WavelateOperator2Dkernel_torch:
         # build low pass kernel?
         self.WType = "simple"
 
+        # PBC dependant parameters
+        self.pbc = pbc
+        if get_crop_border_size_method is not None:
+            self._get_crop_border_size_method = get_crop_border_size_method
+        else:
+            self._get_crop_border_size_method = (
+                self.__class__._get_crop_border_size_fully_flexible
+            )
+
+        # NaNs handling
+        if not pbc and mask_full_res is None:
+            raise ValueError(
+                "If PBC is False, mask_full_res must be provided. If data has no NaNs, mask_full_res can be a tensor full of False."
+            )
         self.mask_full_res = (
             STL_2D_Kernel_Torch(
                 array=mask_full_res.to(device=self.device, dtype=torch.bool)
@@ -357,23 +398,19 @@ class WavelateOperator2Dkernel_torch:
         (
             self._reweighting_maps_smooth,
             self._reweighting_maps_wav,
-            self._masks_wav_conv,
-        ) = self._build_reweighting_maps()
+            self._layer1_mask,
+            self._layer2_mask,
+        ) = self._build_reweighting_maps_and_scattering_layer_masks(
+            pbc=self.pbc
+        )  # behavior depending on PBC!!
 
-        self.layer1_mask, self.layer2_mask = self._build_scattering_layer_masks()
-
-        if get_crop_border_size_method is not None:
-            self._get_crop_border_size_method = get_crop_border_size_method
-        else:
-            self._get_crop_border_size_method = (
-                self.__class__._get_crop_border_size_fully_flexible  # TODO: so far no method accounts for smooth kernel!!!
-            )
-
-    def _build_reweighting_maps(self):
+    def _build_reweighting_maps_and_scattering_layer_masks(self, pbc):
         if self.mask_full_res is None:
-            return None, None, None
+            return None, None, None, None
         else:
-            # 1) reweighting maps needed in downsampling of data mask smoothed
+            padding_mode = self.__class__._get_padding_mode(pbc=pbc)
+
+            # 1) reweighting maps needed in downsampling of layer 0 data (no wavelet convolution, only smoothing kernel convolution)
             local_nan_weight_maps_smooth = {}
             smooth_kernel = self._gaussian_kernel_5x5(
                 device=self.mask_full_res.array.device, dtype=self.dtype
@@ -396,6 +433,7 @@ class WavelateOperator2Dkernel_torch:
                         x=parent_array,
                         smooth_kernel=smooth_kernel,
                         dg_inc=1,
+                        padding_mode=padding_mode,  # if not PBC, operates as if NaNs were padded all around the map before smoothing convolution
                     ),
                     dg=dg,
                     N0=self.mask_full_res.N0,
@@ -408,7 +446,7 @@ class WavelateOperator2Dkernel_torch:
                     other=nan,
                 )  # replace with nan where above threshold
 
-            # 2) reweighting maps needed in downsampling of data mask convolved with wavelets
+            # 2) reweighting maps needed in downsampling of layer 1 data (convolved once with wavelets)
             wav_kernels_envelope = torch.ones(
                 self._wav_kernel.shape[-2:], dtype=self.dtype, device=self.device
             ).unsqueeze(
@@ -416,8 +454,8 @@ class WavelateOperator2Dkernel_torch:
             )  # (1,K,K) assumes identical wavelet support for all angles
             local_nan_weight_maps_wav = {}
 
-            # Need to know NaNs position of a mask at any dg convolved with wavelets.
-            masks_wav_conv = {
+            # Stores at every dg=j3 NaNs position of layer 1 data (convolved once with wavelets at j3) in a mask.
+            layer1_mask = {  # {J: (N3)} one mask per scale j at resolution dg=j, same for all angles
                 dg: STL_2D_Kernel_Torch(
                     array=torch.abs(
                         self.__class__._conv2d_circular(
@@ -427,11 +465,13 @@ class WavelateOperator2Dkernel_torch:
                                 else local_nan_weight_maps_smooth[dg].array.isnan()
                             ).to(dtype=self.dtype),
                             w=wav_kernels_envelope,  # assumes identical wavelet support for all angles
+                            padding_mode=padding_mode,  # if not PBC, operates as if NaNs were padded all around the map before wavelet convolution
                         ).squeeze(0)
                     )
                     > 0.0,
                     dg=dg,
                     N0=self.mask_full_res.N0,
+                    conv_history=[dg],
                 )
                 for dg in range(self.J)
             }
@@ -445,7 +485,7 @@ class WavelateOperator2Dkernel_torch:
                     if (
                         dg == j + 1
                     ):  # needs to convolve with wavelets' support before downsampling
-                        parent_array = masks_wav_conv[j].array.to(dtype=self.dtype)
+                        parent_array = layer1_mask[j].array.to(dtype=self.dtype)
                     else:  # dg > j+1, needs only to downsample with a smoothing from previous level
                         parent_array = (
                             local_nan_weight_maps_wav[dg - 1][j]
@@ -458,9 +498,11 @@ class WavelateOperator2Dkernel_torch:
                             x=parent_array,
                             smooth_kernel=smooth_kernel,
                             dg_inc=1,
+                            padding_mode=padding_mode,  # if not PBC, operates as if NaNs were padded all around the map before smoothing convolution
                         ),
                         dg=dg,
                         N0=self.mask_full_res.N0,
+                        conv_history=[j],
                     )  # (Ndg,Ndg) local nan fraction
 
                     local_nan_weight_maps_wav[dg][j].array = torch.where(
@@ -470,6 +512,31 @@ class WavelateOperator2Dkernel_torch:
                         other=nan,
                     )  # (Ndg,Ndg) replace with nan where above threshold
 
+            # 3) Stores at every dg=j3 and every j2 NaNs position of layer 2 data (convolved first with wavelets at j2, then possibly local operations such as modulus, and then convolved a second time with wavelets at j3) in a mask.
+            layer2_mask = {
+                j3: {
+                    j2: STL_2D_Kernel_Torch(
+                        array=(
+                            self.__class__._conv2d_circular(  # convolve with wavelet support at resolution j3
+                                x=(
+                                    local_nan_weight_maps_wav[j3][j2].array.isnan()
+                                    if j2 < j3
+                                    else layer1_mask[j3].array
+                                ).to(dtype=self.dtype),
+                                w=wav_kernels_envelope,
+                                padding_mode=padding_mode,  # if not PBC, operates as if NaNs were padded all around the map before wavelet convolution
+                            )
+                            .squeeze(0)
+                            .squeeze(0)
+                            > 0.0  # back to bool
+                        ),
+                    )
+                    for j2 in range(j3 + 1)
+                }
+                for j3 in range(self.J)
+            }
+
+            # 4) final reweighting maps
             reweighting_maps_smooth = local_nan_weight_maps_smooth
             reweighting_maps_wav = local_nan_weight_maps_wav
             for dg in range(1, self.J):
@@ -481,69 +548,12 @@ class WavelateOperator2Dkernel_torch:
                         1.0 - reweighting_maps_wav[dg][j].array
                     )
 
-            return reweighting_maps_smooth, reweighting_maps_wav, masks_wav_conv
-
-    def _build_scattering_layer_masks(self):
-        if self.mask_full_res is None:
-            return None, None
-        else:
-            wav_kernels_envelope = torch.ones(
-                self._wav_kernel.shape[-2:], dtype=self.dtype, device=self.device
-            ).unsqueeze(
-                0
-            )  # (1,K,K) assumes identical wavelet support for all angles
-
-            layer1_mask = {
-                j3: STL_2D_Kernel_Torch(
-                    array=self.__class__._conv2d_circular(
-                        x=(
-                            self._reweighting_maps_smooth[j3].array.isnan()
-                            if j3 > 0
-                            else self.mask_full_res.array
-                        ).to(
-                            dtype=self.dtype
-                        ),  # can also be computed as a downsampling of mask_full_res at dg=j3 then convolved with wav_kernels_envelope
-                        w=wav_kernels_envelope,
-                    ).squeeze(
-                        0
-                    ),  # will be set to True iff > 0.0 before return
-                    dg=j3,
-                    N0=self.mask_full_res.N0,
-                    conv_history=[j3],
-                )
-                for j3 in range(self.J)
-            }  # {J: (N3)} one mask per scale j3 at resolution dg=j3, same for all angles
-
-            layer2_mask = {
-                j3: {
-                    j2: self.downsample(
-                        data=layer1_mask[j2].copy(),
-                        dg_out=j3,
-                        inplace=True,
-                        replace_nan_value=nan,
-                    )
-                    for j2 in range(j3 + 1)
-                }
-                for j3 in range(self.J)
-            }
-
-            for j3 in range(self.J):
-                layer1_mask[j3].array = layer1_mask[j3].array > 0.0
-                for j2 in range(j3 + 1):
-                    layer2_mask[j3][j2].array = (
-                        self.__class__._conv2d_circular(
-                            x=(
-                                layer2_mask[j3][j2].array.isnan()
-                                if j2 < j3
-                                else layer2_mask[j3][j2].array
-                            ).to(dtype=self.dtype),
-                            w=wav_kernels_envelope,
-                        )
-                        .squeeze(0)
-                        .squeeze(0)
-                        > 0.0
-                    )
-            return layer1_mask, layer2_mask
+            return (
+                reweighting_maps_smooth,
+                reweighting_maps_wav,
+                layer1_mask,
+                layer2_mask,
+            )
 
     def _find_mask(self, data):
         if self.mask_full_res is None:
@@ -556,9 +566,9 @@ class WavelateOperator2Dkernel_torch:
                 )
             assert data.dg == data.conv_history[-1]
             if layer == 1:
-                return self.layer1_mask[data.conv_history[-1]].array
+                return self._layer1_mask[data.conv_history[-1]].array
             elif layer == 2:
-                return self.layer2_mask[data.conv_history[-1]][
+                return self._layer2_mask[data.conv_history[-1]][
                     data.conv_history[0]
                 ].array
 
@@ -627,11 +637,11 @@ class WavelateOperator2Dkernel_torch:
             if False:  # conservative handling of borders larger than array
                 assert array.shape[-2] > 2 * border
                 assert array.shape[-1] > 2 * border
-            elif False:  # flexible handling of borders larger than array
+            elif True:  # flexible handling of borders larger than array
                 if min(array.shape[-2:]) <= 2 * border:
                     if not getattr(
                         self, "_border_warning_raised", False
-                    ):  # warns the user only once per wavelate operator
+                    ):  # warns the user only once per wavelet operator
                         print(
                             "Warning! Data with shape {:} too small to be cropped with border {:}. Using border={:} instead.".format(
                                 array.detach().cpu().numpy().shape[-2:],
@@ -713,7 +723,7 @@ class WavelateOperator2Dkernel_torch:
 
         return cov
 
-    def apply(self, data, j):
+    def apply(self, data, j, pbc=True):
         """
         Apply the convolution kernel to data.array [..., Nx, Ny]
         and return cdata [..., L, Nx, Ny].
@@ -732,16 +742,20 @@ class WavelateOperator2Dkernel_torch:
         if j != data.dg:
             raise ValueError("j is not equal to dg, convolution not possible")
 
+        assert (
+            pbc == self.pbc
+        ), "pbc flag must match the one used to build the wavelet operator."
+
         x = data.array  # [..., Nx, Ny]
 
-        # Ensure x is a torch tensor on the same device / dtype as the _wav_kernel
-        x = torch.as_tensor(
-            x, device=self._wav_kernel.device, dtype=self._wav_kernel.dtype
-        )
+        # Ensure x is a torch tensor on the same device as the _wav_kernel
+        x = torch.as_tensor(x, device=self._wav_kernel.device)
 
         weight = self._wav_kernel.squeeze(0)  # [L, K, K]
 
-        convolved = self.__class__._complex_conv2d_circular(x, weight)
+        convolved = self.__class__._semicomplex_conv2d_circular(
+            x, weight, padding_mode=self.__class__._get_padding_mode(pbc=pbc)
+        )
 
         return STL_2D_Kernel_Torch(
             convolved, dg=data.dg, N0=data.N0, conv_history=data.conv_history + [j]
@@ -749,7 +763,7 @@ class WavelateOperator2Dkernel_torch:
 
     @staticmethod
     def _downsample_tensor(
-        x: torch.Tensor, smooth_kernel: torch.Tensor, dg_inc: int
+        x: torch.Tensor, smooth_kernel: torch.Tensor, dg_inc: int, padding_mode: str
     ) -> torch.Tensor:
         """
         Downsample a tensor by a factor 2**dg_inc along the last two
@@ -788,9 +802,7 @@ class WavelateOperator2Dkernel_torch:
                 )
             # Add circular padding for periodic boundaries
             pad = smooth_kernel.shape[-1] // 2
-            y_padded = F.pad(
-                y, (pad, pad, pad, pad), mode="circular"
-            )  # TODO: check if really necessary to pad with PBC.
+            y_padded = F.pad(y, (pad, pad, pad, pad), mode=padding_mode)
             y = F.conv2d(
                 input=y_padded, weight=smooth_kernel.unsqueeze(0).unsqueeze(0), stride=2
             )
@@ -799,7 +811,7 @@ class WavelateOperator2Dkernel_torch:
         return y.reshape(*leading_dims, H2, W2)
 
     ###########################################################################
-    def downsample(self, data, dg_out, inplace=True, replace_nan_value=nan):
+    def downsample(self, data, dg_out, inplace=True, replace_nan_value=nan, pbc=True):
         """
         Downsample the data to the dg_out resolution.
         Downsampling is done in real space along the last two dimensions using (successive iterations of, if dg_out - dg > 1) torch.conv2d with stride=2.
@@ -814,6 +826,10 @@ class WavelateOperator2Dkernel_torch:
                 "Requested dg_out < current dg; upsampling not supported by downsampling method."
             )
 
+        assert (
+            pbc == self.pbc
+        ), "pbc flag must match the one used to build the wavelet operator."
+
         data = data.copy(empty=False) if not inplace else data
         dg_inc = dg_out - data.dg
 
@@ -821,9 +837,14 @@ class WavelateOperator2Dkernel_torch:
             smooth_kernel = self._gaussian_kernel_5x5(
                 device=data.array.device, dtype=data.array.dtype
             )
+            padding_mode = self.__class__._get_padding_mode(pbc=pbc)
+
             if self.mask_full_res is None:  # no mask
                 data.array = self._downsample_tensor(
-                    x=data.array, smooth_kernel=smooth_kernel, dg_inc=dg_inc
+                    x=data.array,
+                    smooth_kernel=smooth_kernel,
+                    dg_inc=dg_inc,
+                    padding_mode=padding_mode,
                 )
                 data.dg = dg_out
             else:  # mask
@@ -848,7 +869,7 @@ class WavelateOperator2Dkernel_torch:
                             "convolved_at level must be greater than or equal to input data resolution."
                         )
                     if data.dg == convolved_at:
-                        input_data_mask = self._masks_wav_conv[data.dg].array
+                        input_data_mask = self._layer1_mask[data.dg].array
                     else:
                         input_data_mask = self._reweighting_maps_wav[data.dg][
                             convolved_at
@@ -864,7 +885,10 @@ class WavelateOperator2Dkernel_torch:
                     dg_inc
                 ):  # downsampling is done step by step to apply reweighting at each step
                     data.array = self._downsample_tensor(
-                        x=data.array, smooth_kernel=smooth_kernel, dg_inc=1
+                        x=data.array,
+                        smooth_kernel=smooth_kernel,
+                        dg_inc=1,
+                        padding_mode=padding_mode,
                     )
                     data.dg += 1
 

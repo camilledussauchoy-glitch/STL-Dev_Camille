@@ -138,7 +138,7 @@ class ST_Operator:
             )
 
         self.wavelet_op = data.get_wavelet_op(
-            J=J, L=L, **wavelet_op_kwargs
+            J=J, L=L, pbc=pbc, **wavelet_op_kwargs
         )  # Wavelet_Operator(DT, N0, J, L, WType)
         self.J = self.wavelet_op.J
         self.L = self.wavelet_op.L
@@ -377,7 +377,7 @@ class ST_Operator:
 
         for j3 in range(J):
             # Compute first convolution and modulus
-            data_l1 = self.wavelet_op.apply(l_data, j=j3)  # (Nb,Nc,L,N3)
+            data_l1 = self.wavelet_op.apply(l_data, j=j3, pbc=pbc)  # (Nb,Nc,L,N3)
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
 
             if False and self.wavelet_op.mask_full_res is not None:
@@ -405,7 +405,7 @@ class ST_Operator:
             for j2 in range(j3 + 1):
 
                 data_l1m_l2_j2 = self.wavelet_op.apply(
-                    data_l1m[j2], j=j3
+                    data_l1m[j2], j=j3, pbc=pbc
                 )  # (Nb,Nc,L2,L3,N3)
 
                 if False and self.wavelet_op.mask_full_res is not None:
@@ -445,6 +445,7 @@ class ST_Operator:
                     dg_out=j3 + 1,
                     inplace=True,
                     replace_nan_value=self.replace_nan_value,
+                    pbc=pbc,
                 )  # (Nb,Nc,j3+1,L,N3)
 
                 for j2 in range(j3 + 1):
@@ -453,6 +454,7 @@ class ST_Operator:
                         dg_out=j3 + 1,
                         inplace=True,
                         replace_nan_value=self.replace_nan_value,
+                        pbc=pbc,
                     )  # (Nb,Nc,j3+1,L,N3)
 
         ########################################
