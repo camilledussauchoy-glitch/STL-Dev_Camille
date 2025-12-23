@@ -22,7 +22,9 @@ class ScatteringMatchModel(nn.Module):
         self.mask_full_res = st_op.wavelet_op.mask_full_res
 
         # Learnable field u
-        self.u = torch.randn(init_shape, device=device, dtype=dtype)
+        self.u = torch.randn(
+            init_shape, device=device, dtype=dtype
+        )  # WARNING: if filtered to match PS constraints in the future, think about sampling non PBC fields when asked!!!
 
         # for security put large values which should raise abberant values if actually used
         if self.mask_full_res is not None:
@@ -41,10 +43,6 @@ class ScatteringMatchModel(nn.Module):
             print(
                 "NaN detected in the running synthesis mask, the synthesis takes it into account"
             )
-
-    #        self.u = nn.Parameter(
-    #            st_op.wavelet_op.apply_smooth(self.u, inplace=False).array
-    #        )
 
     def forward(self):
         DC_u = self.STLDataClass(self.u)
