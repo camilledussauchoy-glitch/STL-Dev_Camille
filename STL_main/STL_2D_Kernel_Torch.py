@@ -105,7 +105,7 @@ class STL_2D_Kernel_Torch:
                 raise ValueError("dg is given, N0 should not be None")
             self.N0 = N0
 
-        self.array = self.to_array(array)
+        self.array = self._to_array(array)
 
         self.device = self.array.device
         self.dtype = self.array.dtype
@@ -113,7 +113,7 @@ class STL_2D_Kernel_Torch:
         self.conv_history = conv_history
 
     ###########################################################################
-    def to_array(self, array):
+    def _to_array(self, array):
         """
         Transform input array (NumPy or PyTorch) into a PyTorch tensor.
         Should return None if None.
@@ -294,8 +294,8 @@ class WaveletOperator2Dkernel_torch:
         return torch.complex(real_part, imag_part)
 
     @staticmethod
-    def _get_crop_border_size_largest_scale_second_layer(data, pbc, wavelet_op):
-        if pbc:
+    def _get_crop_border_size_largest_scale_second_layer(data, wavelet_op):
+        if data.pbc:
             return 0
         else:
             deepest_layer = 2
@@ -306,8 +306,8 @@ class WaveletOperator2Dkernel_torch:
             )
 
     @staticmethod
-    def _get_crop_border_size_largest_scale_layer_flexible(data, pbc, wavelet_op):
-        if pbc or len(data.conv_history) == 0:
+    def _get_crop_border_size_largest_scale_layer_flexible(data, wavelet_op):
+        if data.pbc or len(data.conv_history) == 0:
             return 0
         else:
             return (
@@ -317,8 +317,8 @@ class WaveletOperator2Dkernel_torch:
             )
 
     @staticmethod
-    def _get_crop_border_size_fully_flexible(data, pbc, wavelet_op):
-        if pbc or len(data.conv_history) == 0:
+    def _get_crop_border_size_fully_flexible(data, wavelet_op):
+        if data.pbc or len(data.conv_history) == 0:
             return 0
         elif len(data.conv_history) == 1:
             return int(
@@ -659,12 +659,14 @@ class WaveletOperator2Dkernel_torch:
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         """
-        border = self._get_crop_border_size_method(data=data, pbc=pbc, wavelet_op=self)
+        border = self._get_crop_border_size_method(data=data, wavelet_op=self)
+        cropped_array = self._crop(array=data.array, border=border)
+        cropped_mask = self._crop(array=self._find_mask(data), border=border)
         return maskmean(
-            x=self._crop(array=data.array, border=border),
+            x=cropped_array,
             square=square,
             dim=dim,
-            mask=self._crop(array=self._find_mask(data), border=border),
+            mask=cropped_mask,
         )
 
     def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1), pbc=True):
@@ -700,7 +702,7 @@ class WaveletOperator2Dkernel_torch:
                 self._get_crop_border_size_method(data=data1, pbc=pbc, wavelet_op=self),
                 self._get_crop_border_size_method(data=data2, pbc=pbc, wavelet_op=self),
             )
-
+            
         x = data1.array
         y = data2.array
 
@@ -714,8 +716,9 @@ class WaveletOperator2Dkernel_torch:
             x_c = x
             y_c = y
 
+        cropped_array = self._crop(array=x_c * torch.conj(y_c), border=border)
         cov = maskmean(
-            x=self._crop(array=x_c * y_c.conj(), border=border),
+            x=cropped_array,
             square=False,
             dim=dim,
             mask=self._crop(array=mask, border=border),
