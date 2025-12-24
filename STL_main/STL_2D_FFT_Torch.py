@@ -3,6 +3,7 @@ Created on Wed Nov 14:07 2018
 """
 
 import numpy as np
+import math
 import torch
 
 from STL_main.torch_backend import (
@@ -444,50 +445,59 @@ class CrappyWavelateOperator2D_FFT_torch:
         return filters_bank
     
     @staticmethod
-    def _get_crop_border_size_largest_scale_second_layer(data, pbc, wavelet_op):
-        if pbc:
+    def _get_crop_border_size_largest_scale_second_layer(data, wavelet_op):
+        sigma0 = min(wavelet_op.N0) / 8 # base sigma used in gaussian_bank
+        if data.pbc:
             return 0
         else:
             deepest_layer = 2
-            return (
-                deepest_layer
-                * 2 ** (wavelet_op.J - 1 - data.dg)
-                * (wavelet_op.KERNELSZ // 2)
+            safety_prefactor = math.sqrt(4 * math.log(10)) # point where Gaussian is ~1% of max
+            return math.ceil(
+                safety_prefactor * deepest_layer * (2 ** (wavelet_op.J - 1 - data.dg))
+                / (2 * math.pi * sigma0)
             )
 
     @staticmethod
-    def _get_crop_border_size_largest_scale_layer_flexible(data, pbc, wavelet_op):
-        if pbc or len(data.conv_history) == 0:
+    def _get_crop_border_size_largest_scale_layer_flexible(data, wavelet_op):
+        sigma0 = min(wavelet_op.N0) / 8 # base sigma used in gaussian_bank
+        if data.pbc or len(data.conv_history) == 0:
             return 0
         else:
-            return (
-                len(data.conv_history)
-                * 2 ** (wavelet_op.J - 1 - data.dg)
-                * (wavelet_op.KERNELSZ // 2)
+            safety_prefactor = math.sqrt(4 * math.log(10)) # point where Gaussian is ~1% of max
+            return math.ceil(
+                safety_prefactor * len(data.conv_history) * (2 ** (wavelet_op.J - 1 - data.dg))
+                / (2 * math.pi * sigma0)
             )
 
     @staticmethod
-    def _get_crop_border_size_fully_flexible(data, pbc, wavelet_op):
-        if pbc or len(data.conv_history) == 0:
+    def _get_crop_border_size_fully_flexible(data, wavelet_op):
+        sigma0 = min(wavelet_op.N0) / 8 # base sigma used in gaussian_bank
+        safety_prefactor = math.sqrt(4 * math.log(10)) # point where Gaussian is ~1% of max
+
+        if data.pbc or len(data.conv_history) == 0:
             return 0
         elif len(data.conv_history) == 1:
             return max(
                 1,
-                int(2 ** (data.conv_history[0] - data.dg) * (wavelet_op.KERNELSZ // 2)),
+                math.ceil(
+                    safety_prefactor * 2 ** (data.conv_history[0] - data.dg) 
+                    / (2 * math.pi * sigma0)
+                )
             )
         elif len(data.conv_history) == 2:
             return max(
                 1,
-                int(
-                    (
+                math.ceil(
+                    safety_prefactor * (
                         2 ** (data.conv_history[0] - data.dg)
                         + 2 ** (data.conv_history[1] - data.dg)
                     )
-                    * (wavelet_op.KERNELSZ // 2)
+                    / (2 * math.pi * sigma0)
                 ),
             )
         else:
             raise ValueError("Invalid data conv_history.")
+
 
     def __init__(
         self,
