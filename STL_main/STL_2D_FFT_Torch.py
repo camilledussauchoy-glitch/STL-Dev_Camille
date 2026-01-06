@@ -15,13 +15,15 @@ from STL_main.torch_backend import (
     maskmean,
 )
 
+from STL_main.ST_Operator import ST_Operator
+
 ###############################################################################
 ###############################################################################
 class STL_2D_FFT_Torch:
     """
     Class for 2D planar STL FFT using PyTorch
     """    
-    def __init__(self, array, dg=None, N0=None, conv_history=[], fourier_status=False):
+    def __init__(self, array, dg=None, N0=None, pbc = False, conv_history=[], fourier_status=False):
         """
         Initialize the STL_2D_FFT_torch class.
 
@@ -57,6 +59,7 @@ class STL_2D_FFT_Torch:
         self.device = self.array.device
         self.dtype = self.array.dtype
 
+        self.pbc = pbc
         self.conv_history = conv_history
 
     ###########################################################################
@@ -102,12 +105,9 @@ class STL_2D_FFT_Torch:
         new = object.__new__(STL_2D_FFT_Torch)
 
         # Copy metadata
-        new.N0 = self.N0
-        new.dg = self.dg
-        new.fourier_status = self.fourier_status
-        new.device = self.device
-        new.dtype = self.dtype
-        new.conv_history = self.conv_history
+        for k, v in self.__dict__.items():
+            if k != "array":  
+                setattr(new, k, v)
 
         # Copy array
         if empty:
@@ -120,6 +120,7 @@ class STL_2D_FFT_Torch:
         return new
     
     ###########################################################################
+    ### Note: slicing should be on MR=True data, to be removed
     def __getitem__(self, key):
         """
         To slice directly the array attribute.
@@ -235,15 +236,15 @@ class STL_2D_FFT_Torch:
         # If current status differs from desired
         if data.fourier_status != target_fourier_status:
             if target_fourier_status:
-                data.array = data.fourier(inplace=True)
+                data.fourier(inplace=True)
             else:
-                data.array = data.ifourier(inplace=True)
+                data.ifourier(inplace=True)
 
         return data
 
 
     ###########################################################################
-    def get_wavelet_op(self, J=None, L=None):
+    def get_wavelet_op(self, J=None, L=None, pbc=None):
         if L is None:
             L = 4
         if J is None:
@@ -256,6 +257,18 @@ class STL_2D_FFT_Torch:
             device=self.array.device,
             dtype=self.array.dtype
         )
+
+
+    ###############################################################################
+    def get_ST_op(
+            self,
+            J = None,
+            L = None,
+            jmin=None,
+            jmax=None,
+            dj=None
+        ):
+        return ST_Operator(self, J=J, L=L, jmin=jmin, jmax=jmax, dj=dj)
 
 
 class CrappyWavelateOperator2D_FFT_torch:
@@ -573,7 +586,7 @@ class CrappyWavelateOperator2D_FFT_torch:
         self.j_to_dg = []
         for j in range(self.J):
             dg = min(j, self.dg_max)
-            subsampled_wavelet = self.downsample(
+            subsampled_wavelet = self.__class__.downsample(
                 data=STL_2D_FFT_Torch(array=self.wavelet_array[j], fourier_status=True),
                 dg_out=dg,
                 inplace=True,
@@ -638,7 +651,7 @@ class CrappyWavelateOperator2D_FFT_torch:
         # Set data in Fourier space in place
         data = data.set_fourier_status(target_fourier_status=True, inplace=True)
         return STL_2D_FFT_Torch(
-            array=data[..., None, :, :].array * wavelet_j, fourier_status=True
+            array=data[..., None, :, :].array * wavelet_j, dg=data.dg, N0=data.N0, fourier_status=True
         ) # [..., L, Njx, Njy]
 
     ###########################################################################  
@@ -687,7 +700,7 @@ class CrappyWavelateOperator2D_FFT_torch:
             return array[..., border:-border, border:-border]
 
     ###########################################################################
-    def mean(self, data, square=False, dim=(-2, -1)):
+    def mean(self, data, square=False, dim=(-2, -1), **kwargs):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         Parameters
@@ -723,7 +736,7 @@ class CrappyWavelateOperator2D_FFT_torch:
 
     
     ###########################################################################
-    def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1), pbc=True):
+    def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1), **kwargs):
         """
         Compute the covariance between data1 and data2 on the last two
         dimensions (Nx, Ny).
@@ -740,14 +753,15 @@ class CrappyWavelateOperator2D_FFT_torch:
                 self._get_crop_border_size_method(data=data1,wavelet_op=self),
                 self._get_crop_border_size_method(data=data2, wavelet_op=self),
             )
-            
+
+        data1 = data1.set_fourier_status(target_fourier_status=False, inplace=False)
+        data2 = data2.set_fourier_status(target_fourier_status=False, inplace=False)
+               
         x = data1.array
         y = data2.array
 
         if remove_mean:
-            raise NotImplementedError(
-                "remove_mean is not yet implemented. think about giving the right mask when doing it"
-            )
+            raise NotImplementedError("remove_mean is not yet implemented.")
             # x_c = x - x.mean(dim=dim, keepdim=True)
             # y_c = y - y.mean(dim=dim, keepdim=True)
         else:
@@ -765,7 +779,7 @@ class CrappyWavelateOperator2D_FFT_torch:
         return cov
 
     ###########################################################################
-    def apply(self, data, j=None, target_fourier_status=None):
+    def apply(self, data, j=None, target_fourier_status=None, **kwargs):
         """
         Compute the Wavelet Transform (WT) of data.
         This method is DT dependent, and calls independent iterations with
@@ -865,24 +879,27 @@ class CrappyWavelateOperator2D_FFT_torch:
 
         # Transform to correct Fourier status if necessary
         if target_fourier_status is not None:
-            WT.set_fourier_status(target_fourier_status)
+            WT.set_fourier_status(target_fourier_status, inplace=True)
 
         return WT
 
     ###########################################################################
+    @staticmethod
     def downsample(
-        self, data, dg_out, inplace=True, target_fourier_status=True
+        data, dg_out, inplace=True, target_fourier_status=True, **kwargs
     ):
         """
-        Downsample the self.array to the dg_out resolution.
+        Downsample the data.array to the dg_out resolution.
 
 
         Parameters
         ----------
+        data : STL_2D_FFT_Torch instance
+            Data whose array attribute has to be downsampled.
         dg_out : int
             Desired downsampling factor of the data.
         inplace : bool
-            If True, acts in-place and returns self.
+            If True, acts in-place and returns data.
             If False, returns a new STL_2D_FFT_Torch instance.
         target_fourier_status : bool
             Desired Fourier status of the output data.
@@ -894,8 +911,7 @@ class CrappyWavelateOperator2D_FFT_torch:
         STL_2D_FFT_Torch instance
             Downsampled data at the desired downgrading factor dg_out.
         """
-
-        data = self.copy(empty=False) if not inplace else self
+        data = data.copy(empty=False) if not inplace else data
 
         if dg_out == data.dg:
             return data

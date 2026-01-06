@@ -96,7 +96,6 @@ class ST_Operator:
         data,
         J=None,
         L=None,
-        WType=None,
         SC="ScatCov",
         jmin=None,
         jmax=None,
@@ -109,11 +108,6 @@ class ST_Operator:
         angular_ft=False,
         scale_ft=False,
         flatten=False,
-        wavelet_array=None,
-        wavelet_array_MR=None,
-        dg_max=None,
-        j_to_dg=None,
-        Single_Kernel=None,
         mask_st=None,
         # Optional wavelet operator args
         downsample_nan_weight_threshold=None,
@@ -125,6 +119,7 @@ class ST_Operator:
         # Main parameters
         self.DT = data.DT
         self.N0 = data.N0
+        self.dg = data.dg
 
         # Wavelet transform and related parameters
         wavelet_op_kwargs = {}
@@ -136,14 +131,14 @@ class ST_Operator:
             wavelet_op_kwargs["get_crop_border_size_method"] = (
                 get_crop_border_size_method
             )
-
+        
         self.wavelet_op = data.get_wavelet_op(
             J=J, L=L, pbc=pbc, **wavelet_op_kwargs
         )  # Wavelet_Operator(DT, N0, J, L, WType)
         self.J = self.wavelet_op.J
         self.L = self.wavelet_op.L
         self.WType = self.wavelet_op.WType
-        self.dg = data.dg
+        
 
         # Scattering transform related parameters
         self.SC = SC
@@ -377,7 +372,7 @@ class ST_Operator:
 
         for j3 in range(J):
             # Compute first convolution and modulus
-            data_l1 = self.wavelet_op.apply(l_data, j=j3, pbc=pbc)  # (Nb,Nc,L,N3)
+            data_l1 = self.wavelet_op.apply(l_data, j=j3, pbc=pbc, target_fourier_status=False)  # (Nb,Nc,L,N3)
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
 
             if False and self.wavelet_op.mask_full_res is not None:
@@ -403,7 +398,6 @@ class ST_Operator:
 
             data_l1m_l2 = {}
             for j2 in range(j3 + 1):
-
                 data_l1m_l2_j2 = self.wavelet_op.apply(
                     data_l1m[j2], j=j3, pbc=pbc
                 )  # (Nb,Nc,L2,L3,N3)
@@ -438,7 +432,7 @@ class ST_Operator:
                     )  # (Nb,Nc,L1,L2,L3)
 
             # Downsample at Nj3
-            if (data_st.DT != "2D_FFT_Torch") and j3 < J - 1:
+            if j3 < J - 1:
 
                 self.wavelet_op.downsample(
                     data=l_data,
@@ -456,6 +450,48 @@ class ST_Operator:
                         replace_nan_value=self.replace_nan_value,
                         pbc=pbc,
                     )  # (Nb,Nc,j3+1,L,N3)
+
+        """
+        # Version to compute ST statistics for STL_FFT_Torch from fullJ mode 
+
+        # --- Compute first convolution and modulus ---
+        print(self.wavelet_op.wavelet_array.shape)
+        data_l1 = self.wavelet_op.apply(data, target_fourier_status=False)  # (Nb,Nc,J,L,N)
+        data_l1m = data_l1.modulus(inplace=True)  # (Nb,Nc,J,L,N)
+
+        # --- Compute S1 and S2 ---
+        data_st.S1 = self.wavelet_op.mean(data_l1m) # (Nb,Nc,J,L)
+        data_st.S2 = self.wavelet_op.mean(data_l1m, square=True)  # (Nb,Nc,J,L)  
+
+        for j3 in range(J):
+            data_l1_tmp = data_l1.copy()  # (Nb,Nc,j3+1,L,N)
+            data_l1m_tmp = data_l1m.copy()
+            # (Nb,Nc,j3+1,L,N)
+            data_l1_tmp.array = data_l1_tmp.array[:, :, : j3 + 1]
+            data_l1m_tmp.array = data_l1m_tmp.array[:, :, : j3 + 1]
+
+            # Downsample at Nj3
+            self.wavelet_op.downsample(data_l1_tmp, j3)  # (Nb,Nc,j3+1,L,N3)
+            self.wavelet_op.downsample(data_l1m_tmp, j3)  # (Nb,Nc,j3+1,L,N3)
+
+            # Compute |I*psi2|*psi3                      #(Nb,Nc,j3+1,L2,L3,N3)
+            data_l1m_l2 = self.wavelet_op.apply(data_l1m_tmp, j=j3)
+
+            for j2 in range(j3 + 1):
+                # S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3)
+                data_st.S3[:, :, j2, j3, :, :] = self.wavelet_op.cov(
+                    data_l1m_l2[:, :, j2],
+                    data_l1_tmp[:, :, j3, None]
+                )  # (Nb,Nc,L2,L3,N3) x (Nb,Nc,1,L3,N3)
+
+                for j1 in range(j2 + 1):
+                    # S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3)
+                    data_st.S4[:, :, j1, j2, j3, :, :, :] = self.wavelet_op.cov(
+                        data_l1m_l2[:, :, j1, :, None],
+                        data_l1m_l2[:, :, j2, None, :]
+                    )  # (Nb,Nc,L1, 1,L3,N3) x (Nb,Nc, 1,L2,L3,N3)
+
+        """
 
         ########################################
         # Additional transform/compression
