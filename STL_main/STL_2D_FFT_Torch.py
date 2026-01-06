@@ -2,28 +2,32 @@
 Created on Wed Nov 14:07 2018
 """
 
-import numpy as np
 import math
+
+import numpy as np
 import torch
 
+from STL_main.ST_Operator import ST_Operator
 from STL_main.torch_backend import (
     _DEFAULT_DEVICE,
     _DEFAULT_DTYPE,
     _get_device,
     _get_dtype,
-    to_torch_tensor,
     maskmean,
+    to_torch_tensor,
 )
 
-from STL_main.ST_Operator import ST_Operator
 
 ###############################################################################
 ###############################################################################
 class STL_2D_FFT_Torch:
     """
     Class for 2D planar STL FFT using PyTorch
-    """    
-    def __init__(self, array, dg=None, N0=None, pbc = False, conv_history=[], fourier_status=False):
+    """
+
+    def __init__(
+        self, array, dg=None, N0=None, pbc=False, conv_history=[], fourier_status=False
+    ):
         """
         Initialize the STL_2D_FFT_torch class.
 
@@ -85,7 +89,6 @@ class STL_2D_FFT_Torch:
             # matches the input tensor dtype to the device
             return to_torch_tensor(array)
 
-
     ###########################################################################
     def copy(self, empty=False):
         """
@@ -106,7 +109,7 @@ class STL_2D_FFT_Torch:
 
         # Copy metadata
         for k, v in self.__dict__.items():
-            if k != "array":  
+            if k != "array":
                 setattr(new, k, v)
 
         # Copy array
@@ -118,7 +121,7 @@ class STL_2D_FFT_Torch:
             )
 
         return new
-    
+
     ###########################################################################
     ### Note: slicing should be on MR=True data, to be removed
     def __getitem__(self, key):
@@ -129,7 +132,7 @@ class STL_2D_FFT_Torch:
         ----------
         - key : int or slice
             Slicing key.
-        
+
         Returns
         -------
         - STL_2D_FFT_Torch
@@ -161,7 +164,7 @@ class STL_2D_FFT_Torch:
         data.array = torch.abs(data.array)
 
         return data
-    
+
     ###########################################################################
     def fourier(self, inplace=False):
         """
@@ -187,7 +190,7 @@ class STL_2D_FFT_Torch:
             data.fourier_status = True
             return data
 
-     ###########################################################################
+    ###########################################################################
     def ifourier(self, inplace=False):
         """
         Compute the inverse Fourier Transform on the last two dimensions of the input
@@ -212,7 +215,7 @@ class STL_2D_FFT_Torch:
             data.array = torch.fft.ifft2(data.array, norm="ortho")
             data.fourier_status = False
             return data
-        
+
     ###########################################################################
     def set_fourier_status(self, target_fourier_status, inplace=False):
         """
@@ -225,7 +228,7 @@ class STL_2D_FFT_Torch:
         - inplace : bool
             If True, acts in-place and returns self.
             If False, returns a new STL_2D_FFT_Torch instance.
-        
+
         Returns
         -------
         STL_2D_FFT_Torch
@@ -242,7 +245,6 @@ class STL_2D_FFT_Torch:
 
         return data
 
-
     ###########################################################################
     def get_wavelet_op(self, J=None, L=None, pbc=None):
         if L is None:
@@ -250,24 +252,11 @@ class STL_2D_FFT_Torch:
         if J is None:
             J = np.min([int(np.log2(self.N0[0])), int(np.log2(self.N0[1]))]) - 2
         return CrappyWavelateOperator2D_FFT_torch(
-            L,
-            J,
-            self.N0,
-            self.DT,
-            device=self.array.device,
-            dtype=self.array.dtype
+            L, J, self.N0, self.DT, device=self.array.device, dtype=self.array.dtype
         )
 
-
     ###############################################################################
-    def get_ST_op(
-            self,
-            J = None,
-            L = None,
-            jmin=None,
-            jmax=None,
-            dj=None
-        ):
+    def get_ST_op(self, J=None, L=None, jmin=None, jmax=None, dj=None):
         return ST_Operator(self, J=J, L=L, jmin=jmin, jmax=jmax, dj=dj)
 
 
@@ -348,7 +337,7 @@ class CrappyWavelateOperator2D_FFT_torch:
         Only if if Single_Kernel==False.
     - Single_Kernel : bool
         if convolution done at all scales with the same L oriented wavelets
-    
+
     Questions and to do
     ----------
     - Is Single_Kernel sufficient in itself? We could separate the fact to do
@@ -412,7 +401,7 @@ class CrappyWavelateOperator2D_FFT_torch:
         G[G < eps] = 0
 
         return G
-    
+
     @classmethod
     def gaussian_bank(cls, J, L, size, base_mu=None, base_sigma=None):
         """
@@ -449,43 +438,53 @@ class CrappyWavelateOperator2D_FFT_torch:
             mu = base_mu / (2**j)
             for l in range(L):
                 angle = float(l) * torch.pi / L
-                filters_bank[j, l] =  cls.gaussian_2d_rotated(mu, sigma, angle, size)
+                filters_bank[j, l] = cls.gaussian_2d_rotated(mu, sigma, angle, size)
 
         # Return the zero frequency to (0,0), and put it to zero
         filters_bank = torch.fft.fftshift(filters_bank, dim=(-2, -1))
         filters_bank[:, :, 0, 0] = 0
 
         return filters_bank
-    
+
     @staticmethod
     def _get_crop_border_size_largest_scale_second_layer(data, wavelet_op):
-        sigma0 = min(wavelet_op.N0) / 8 # base sigma used in gaussian_bank
+        sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
         if data.pbc:
             return 0
         else:
             deepest_layer = 2
-            safety_prefactor = math.sqrt(4 * math.log(10)) # point where Gaussian is ~1% of max
+            safety_prefactor = math.sqrt(
+                4 * math.log(10)
+            )  # point where Gaussian is ~1% of max
             return math.ceil(
-                safety_prefactor * deepest_layer * (2 ** (wavelet_op.J - 1 - data.dg))
+                safety_prefactor
+                * deepest_layer
+                * (2 ** (wavelet_op.J - 1 - data.dg))
                 / (2 * math.pi * sigma0)
             )
 
     @staticmethod
     def _get_crop_border_size_largest_scale_layer_flexible(data, wavelet_op):
-        sigma0 = min(wavelet_op.N0) / 8 # base sigma used in gaussian_bank
+        sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
         if data.pbc or len(data.conv_history) == 0:
             return 0
         else:
-            safety_prefactor = math.sqrt(4 * math.log(10)) # point where Gaussian is ~1% of max
+            safety_prefactor = math.sqrt(
+                4 * math.log(10)
+            )  # point where Gaussian is ~1% of max
             return math.ceil(
-                safety_prefactor * len(data.conv_history) * (2 ** (wavelet_op.J - 1 - data.dg))
+                safety_prefactor
+                * len(data.conv_history)
+                * (2 ** (wavelet_op.J - 1 - data.dg))
                 / (2 * math.pi * sigma0)
             )
 
     @staticmethod
     def _get_crop_border_size_fully_flexible(data, wavelet_op):
-        sigma0 = min(wavelet_op.N0) / 8 # base sigma used in gaussian_bank
-        safety_prefactor = math.sqrt(4 * math.log(10)) # point where Gaussian is ~1% of max
+        sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
+        safety_prefactor = math.sqrt(
+            4 * math.log(10)
+        )  # point where Gaussian is ~1% of max
 
         if data.pbc or len(data.conv_history) == 0:
             return 0
@@ -493,15 +492,17 @@ class CrappyWavelateOperator2D_FFT_torch:
             return max(
                 1,
                 math.ceil(
-                    safety_prefactor * 2 ** (data.conv_history[0] - data.dg) 
+                    safety_prefactor
+                    * 2 ** (data.conv_history[0] - data.dg)
                     / (2 * math.pi * sigma0)
-                )
+                ),
             )
         elif len(data.conv_history) == 2:
             return max(
                 1,
                 math.ceil(
-                    safety_prefactor * (
+                    safety_prefactor
+                    * (
                         2 ** (data.conv_history[0] - data.dg)
                         + 2 ** (data.conv_history[1] - data.dg)
                     )
@@ -511,15 +512,14 @@ class CrappyWavelateOperator2D_FFT_torch:
         else:
             raise ValueError("Invalid data conv_history.")
 
-
     def __init__(
         self,
-        L, 
+        L,
         J,
         N0,
         DT="Planar2D_FFT_torch",
         device=_DEFAULT_DEVICE,
-        dtype=_DEFAULT_DTYPE, 
+        dtype=_DEFAULT_DTYPE,
         get_crop_border_size_method=None,
     ):
         """
@@ -551,12 +551,12 @@ class CrappyWavelateOperator2D_FFT_torch:
         self.DT = DT
         self.device = _get_device(torch.device(device))
         self.dtype = _get_dtype(dtype=dtype, device=self.device)
-        
+
         self.wavelet_array = None
         self.wavelet_array_MR = None
         self.dg_max = None
         self.j_to_dg = None
-        self.build() # Build all the wavelets-related attributes.
+        self.build()  # Build all the wavelets-related attributes.
 
         if get_crop_border_size_method is not None:
             self._get_crop_border_size_method = get_crop_border_size_method
@@ -575,7 +575,9 @@ class CrappyWavelateOperator2D_FFT_torch:
             - j_to_dg
         """
         # Create the full resolution Wavelet set (in fourier space plus fftshifted)
-        self.wavelet_array = self.__class__.gaussian_bank(self.J, self.L, self.N0)  # [J, L, N0x, N0y]
+        self.wavelet_array = self.__class__.gaussian_bank(
+            self.J, self.L, self.N0
+        )  # [J, L, N0x, N0y]
 
         # Find dg_max (with a min size of 16 = 2 * 8)
         # To avoid storing tensors at the same effective resolution
@@ -591,13 +593,10 @@ class CrappyWavelateOperator2D_FFT_torch:
                 dg_out=dg,
                 inplace=True,
                 target_fourier_status=True,
-            ) # [L, Njx, Njy]
+            )  # [L, Njx, Njy]
             assert subsampled_wavelet.fourier_status
             self.wavelet_array_MR.append(subsampled_wavelet.array)
             self.j_to_dg.append(dg)
-
-
-
 
     @staticmethod
     def wavelet_conv_full(data, wavelet_set):
@@ -624,7 +623,7 @@ class CrappyWavelateOperator2D_FFT_torch:
         data = data.set_fourier_status(target_fourier_status=True, inplace=True)
         return STL_2D_FFT_Torch(
             array=data[..., None, None, :, :].array * wavelet_set, fourier_status=True
-        ) # [..., J, L, Nx, Ny]
+        )  # [..., J, L, Nx, Ny]
 
     @staticmethod
     def wavelet_conv(data, wavelet_j):
@@ -651,14 +650,17 @@ class CrappyWavelateOperator2D_FFT_torch:
         # Set data in Fourier space in place
         data = data.set_fourier_status(target_fourier_status=True, inplace=True)
         return STL_2D_FFT_Torch(
-            array=data[..., None, :, :].array * wavelet_j, dg=data.dg, N0=data.N0, fourier_status=True
-        ) # [..., L, Njx, Njy]
+            array=data[..., None, :, :].array * wavelet_j,
+            dg=data.dg,
+            N0=data.N0,
+            fourier_status=True,
+        )  # [..., L, Njx, Njy]
 
-    ###########################################################################  
+    ###########################################################################
     def _crop(self, array, border):
         """
         Crops an array by removing 'border' pixels from each side
-        along the last two dimensions. 
+        along the last two dimensions.
 
         Parameters
         ----------
@@ -717,24 +719,14 @@ class CrappyWavelateOperator2D_FFT_torch:
                 return data.array[..., 0, 0]
             else:
                 # Parseval identity
-                return maskmean(
-                    x=data.array,
-                    square=square,
-                    dim=dim,
-                    mask=None
-                )
+                return maskmean(x=data.array, square=square, dim=dim, mask=None)
         else:
             data = data.set_fourier_status(target_fourier_status=False, inplace=False)
             border = self._get_crop_border_size_method(data=data, wavelet_op=self)
             cropped_array = self._crop(array=data.array, border=border)
-            
-            return maskmean(
-                x=cropped_array,
-                square=square,
-                dim=dim
-            )
 
-    
+            return maskmean(x=cropped_array, square=square, dim=dim)
+
     ###########################################################################
     def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1), **kwargs):
         """
@@ -750,13 +742,13 @@ class CrappyWavelateOperator2D_FFT_torch:
             ), "data1 and data2 must have the same resolution."
 
             border = max(
-                self._get_crop_border_size_method(data=data1,wavelet_op=self),
+                self._get_crop_border_size_method(data=data1, wavelet_op=self),
                 self._get_crop_border_size_method(data=data2, wavelet_op=self),
             )
 
         data1 = data1.set_fourier_status(target_fourier_status=False, inplace=False)
         data2 = data2.set_fourier_status(target_fourier_status=False, inplace=False)
-               
+
         x = data1.array
         y = data2.array
 
@@ -769,12 +761,8 @@ class CrappyWavelateOperator2D_FFT_torch:
             y_c = y
 
         cropped_array = self._crop(array=x_c * torch.conj(y_c), border=border)
-        
-        cov = maskmean(
-            x=cropped_array,
-            square=False,
-            dim=dim
-        )
+
+        cov = maskmean(x=cropped_array, square=False, dim=dim)
 
         return cov
 
@@ -852,29 +840,25 @@ class CrappyWavelateOperator2D_FFT_torch:
 
         # fullJ convolution (j=None)
         if j is None:
-            
+
             if data.dg != 0:
                 raise Exception("Data should be at dg=0 resolution")
-            
-            # Convolution at all scales at full resolution N0
-            WT = self.__class__.wavelet_conv_full(
-                data,
-                self.wavelet_array
-            )
 
+            # Convolution at all scales at full resolution N0
+            WT = self.__class__.wavelet_conv_full(data, self.wavelet_array)
 
         # single_j convolution
         elif isinstance(j, int):
             # Check that dg_j resolutions are compatible
             if data.dg != self.j_to_dg[j]:
                 raise Exception("Data should be at dg_j resolution")
-            
+
             # Convolution at scale j at resolution Nj
             WT = self.__class__.wavelet_conv(
                 data,
                 self.wavelet_array_MR[j],
             )
-        else: 
+        else:
             raise Exception("j should be a single int")
 
         # Transform to correct Fourier status if necessary
@@ -885,9 +869,7 @@ class CrappyWavelateOperator2D_FFT_torch:
 
     ###########################################################################
     @staticmethod
-    def downsample(
-        data, dg_out, inplace=True, target_fourier_status=True, **kwargs
-    ):
+    def downsample(data, dg_out, inplace=True, target_fourier_status=True, **kwargs):
         """
         Downsample the data.array to the dg_out resolution.
 

@@ -702,7 +702,7 @@ class WaveletOperator2Dkernel_torch:
                 self._get_crop_border_size_method(data=data1, pbc=pbc, wavelet_op=self),
                 self._get_crop_border_size_method(data=data2, pbc=pbc, wavelet_op=self),
             )
-            
+
         x = data1.array
         y = data2.array
 

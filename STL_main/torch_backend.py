@@ -187,7 +187,9 @@ def maskmean(x, square=False, dim=(-2, -1), mask=None):
         )
     else:
         assert dim == (-2, -1)
-        assert (mask.shape[-len(dim):] == x.shape[-len(dim):]) # check mask shape matches x shape on masked dims
+        assert (
+            mask.shape[-len(dim) :] == x.shape[-len(dim) :]
+        )  # check mask shape matches x shape on masked dims
         # assert x[..., ~mask].isnan().sum() == 0 ############################################### sanity check to remove in the future
         x_masked = torch.where(~mask, x, 0.0)
         x_masked = (

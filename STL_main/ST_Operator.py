@@ -131,14 +131,13 @@ class ST_Operator:
             wavelet_op_kwargs["get_crop_border_size_method"] = (
                 get_crop_border_size_method
             )
-        
+
         self.wavelet_op = data.get_wavelet_op(
             J=J, L=L, pbc=pbc, **wavelet_op_kwargs
         )  # Wavelet_Operator(DT, N0, J, L, WType)
         self.J = self.wavelet_op.J
         self.L = self.wavelet_op.L
         self.WType = self.wavelet_op.WType
-        
 
         # Scattering transform related parameters
         self.SC = SC
@@ -372,7 +371,9 @@ class ST_Operator:
 
         for j3 in range(J):
             # Compute first convolution and modulus
-            data_l1 = self.wavelet_op.apply(l_data, j=j3, pbc=pbc, target_fourier_status=False)  # (Nb,Nc,L,N3)
+            data_l1 = self.wavelet_op.apply(
+                l_data, j=j3, pbc=pbc, target_fourier_status=False
+            )  # (Nb,Nc,L,N3)
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
 
             if False and self.wavelet_op.mask_full_res is not None:
