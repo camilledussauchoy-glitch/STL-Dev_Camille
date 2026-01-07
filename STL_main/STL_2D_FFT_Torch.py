@@ -246,18 +246,41 @@ class STL_2D_FFT_Torch:
         return data
 
     ###########################################################################
-    def get_wavelet_op(self, J=None, L=None, pbc=None):
+    def get_wavelet_op(self, J=None, L=None, pbc=None, **kwargs):
         if L is None:
             L = 4
         if J is None:
             J = np.min([int(np.log2(self.N0[0])), int(np.log2(self.N0[1]))]) - 2
         return CrappyWavelateOperator2D_FFT_torch(
-            L, J, self.N0, self.DT, device=self.array.device, dtype=self.array.dtype
+            L,
+            J,
+            self.N0,
+            self.DT,
+            device=self.array.device,
+            dtype=self.array.dtype,
+            **kwargs
         )
 
     ###############################################################################
-    def get_ST_op(self, J=None, L=None, jmin=None, jmax=None, dj=None):
-        return ST_Operator(self, J=J, L=L, jmin=jmin, jmax=jmax, dj=dj)
+    def get_ST_op(
+        self,
+        J=None,
+        L=None,
+        jmin=None,
+        jmax=None,
+        dj=None,
+        get_crop_border_size_method=None,
+    ):
+
+        return ST_Operator(
+            self,
+            J=J,
+            L=L,
+            jmin=jmin,
+            jmax=jmax,
+            dj=dj,
+            get_crop_border_size_method=get_crop_border_size_method,
+        )
 
 
 class CrappyWavelateOperator2D_FFT_torch:
