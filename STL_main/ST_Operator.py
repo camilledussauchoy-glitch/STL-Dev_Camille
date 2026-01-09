@@ -82,6 +82,12 @@ class ST_Operator:
     - mask_st : list of position
         mask to be applied when flatten ST statistics
 
+    # Power spectrum computation
+    - PS : bool
+        whether to compute power spectrum coefficients in addition to ST statistics
+    - PS_ref : array
+        array of reference PS coefficients
+
     Attributes
     ----------
     - parent parameters (see above)
@@ -112,6 +118,9 @@ class ST_Operator:
         # Optional wavelet operator args
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
+        # Power spectrum computation
+        PS=False,
+        PS_ref=None,
     ):
         """
         Constructor, see details above.
@@ -155,6 +164,10 @@ class ST_Operator:
         self.scale_ft = scale_ft
         self.flatten = flatten
         self.mask_st = mask_st
+
+        # Power spectrum computation
+        self.PS = PS
+        self.PS_ref = PS_ref
 
     ########################################
     @classmethod
@@ -216,6 +229,8 @@ class ST_Operator:
         scale_ft=None,
         flatten=None,
         mask_st=None,
+        PS=None,
+        PS_ref=None,
     ):
         """
         Compute the Scattering Transform (ST) of data, which are either stored
@@ -271,6 +286,11 @@ class ST_Operator:
         - mask_st : list of position
             mask to be applied when flatten ST statistics
 
+        # Power spectrum computation
+        - PS : bool
+            whether to compute power spectrum coefficients in addition to ST statistics
+
+
         Output
         ----------
         - data_st : ST_Statistics instance, or 1D array
@@ -309,6 +329,9 @@ class ST_Operator:
         flatten = self.flatten if flatten is None else flatten
         mask_st = self.mask_st if mask_st is None else mask_st
 
+        PS = self.PS if PS is None else PS
+        PS_ref = self.PS_ref if PS_ref is None else PS_ref
+
         # Put in torch or relevant bk
         if type(data.array) == np.ndarray:
             data.array = bk.from_numpy(data.array)
@@ -336,11 +359,16 @@ class ST_Operator:
             Nb,
             Nc,
             self.wavelet_op,
+            PS,
         )
 
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
-        if self.SC == "ScatCov":
+        if PS:
+            stl_PS = data.get_PS_op()
+            data_st.PS_val = stl_PS.apply(data)
+
+        if SC == "ScatCov":
             data_st.S1 = bk.zeros((Nb, Nc, J, L))
             data_st.S2 = bk.zeros((Nb, Nc, J, L))
             data_st.S3 = (
@@ -501,14 +529,30 @@ class ST_Operator:
         if norm is None:
             pass
         elif norm == "store_ref":
-            if self.S2_ref is not None:
-                print("S2_ref of the ST_Op is overwrote")
+            if SC == "ScatCov" and self.S2_ref is not None:
+                print("Replacing existing S2_ref in ST_Op")
+            if PS and self.PS_ref is not None:
+                print("Replacing existing PS_ref in ST_Op")
             data_st.to_norm(norm="self")
-            self.S2_ref = data_st.S2_ref
+            if SC == "ScatCov":
+                self.S2_ref = data_st.S2_ref
+            if PS:
+                self.PS_ref = data_st.PS_ref
+
         elif norm == "load_ref":
-            if S2_ref is None:
+            if SC == "ScatCov" and S2_ref is None:
                 raise Exception("S2_ref should be stored in the ST_Operator")
-            data_st.to_norm(norm="from_ref", S2_ref=self.S2_ref)
+            if PS and PS_ref is None:
+                raise Exception("PS_ref should be stored in the ST_Operator")
+
+            kwargs = {}
+            if SC == "ScatCov":
+                kwargs["S2_ref"] = S2_ref
+            if PS:
+                kwargs["PS_ref"] = PS_ref
+
+            # Appel avec seulement les bons arguments
+            data_st.to_norm(norm="from_ref", **kwargs)
 
         if iso:
             data_st.to_iso()
@@ -520,6 +564,6 @@ class ST_Operator:
             data_st.to_scale_ft()
 
         if flatten:
-            data_st.flatten(mask_st)
+            data_st.to_flatten(mask_st)
 
         return data_st

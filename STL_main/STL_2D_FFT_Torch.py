@@ -4,6 +4,7 @@ Created on Wed Nov 14:07 2018
 
 import math
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -280,6 +281,20 @@ class STL_2D_FFT_Torch:
             jmax=jmax,
             dj=dj,
             get_crop_border_size_method=get_crop_border_size_method,
+        )
+
+    ###############################################################################
+    def get_PS_op(self, n_bins=None):
+
+        size = min(self.N0)
+
+        if n_bins is None:
+            n_bins = 16
+
+        return PS_operator_2D_FFT_torch(
+            size=size,
+            n_bins=n_bins,
+            device=self.device,
         )
 
 
@@ -960,3 +975,96 @@ class CrappyWavelateOperator2D_FFT_torch:
             target_fourier_status=target_fourier_status, inplace=True
         )
         return data
+
+
+class PS_operator_2D_FFT_torch:
+    """
+    Class whose instances correspond to a power spectrum operator for 2D FFT data.
+    The operator is applied through apply method and is DT-dependent.
+    """
+
+    ###########################################################################
+    def __init__(self, size, n_bins, device=_DEFAULT_DEVICE):
+        self.size = size
+        self.n_bins = n_bins
+        self.device = device  # device of the data used to instantiate the operator
+
+        # create frequency grid
+        freqs = torch.fft.fftfreq(size) * size  # [-size/2, ..., size/2]
+        u, v = torch.meshgrid(freqs, freqs, indexing="ij")
+
+        # radial frequencies
+        rho = torch.sqrt(u**2 + v**2)
+        self.rho = torch.fft.fftshift(rho).to(device)
+
+        # frequency bins
+        self.max_freq = size // 2
+        self.min_freq = 1  # to be refined if needed
+        self.bin_edges = torch.linspace(self.min_freq, self.max_freq, n_bins + 1).to(
+            device
+        )
+        self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])
+
+        # create masks for each bin
+        self.masks = []
+        for i in range(n_bins):
+            mask = (self.rho >= self.bin_edges[i]) & (self.rho < self.bin_edges[i + 1])
+            self.masks.append(mask)
+
+    def apply(self, data):
+        """
+        Compute the power spectrum of the input data.
+
+        Parameters
+        ----------
+        - data : STL_2D_FFT_Torch
+            Input data whose array attribute power spectrum is to be computed.
+
+        Returns
+        -------
+        torch.Tensor
+            Power spectrum values for each frequency bin.
+        """
+        # consistency check
+        if not isinstance(data, STL_2D_FFT_Torch):
+            raise Exception("Data should be a STL_2D_FFT_Torch instance")
+        if self.size != min(data.N0):
+            raise Exception("Data size does not match operator size")
+
+        # Ensure data is in Fourier space
+        l_data = data.set_fourier_status(target_fourier_status=True, inplace=False)
+        l_data.array = torch.fft.fftshift(l_data.array, dim=(-2, -1))
+
+        power_spectrum = []
+        for mask in self.masks:
+            masked_data = l_data.array * mask
+            power = torch.mean(torch.abs(masked_data) ** 2)
+            power_spectrum.append(power.item())
+
+        return torch.tensor(power_spectrum, device=self.device)
+
+    ###########################################################################
+    def plot_PS(self, ps_tensor, label="Power Spectrum", color="b"):
+        """
+        Plot the power spectrum.
+        Parameters
+        ----------
+        ps_tensor: torch.Tensor
+            Power spectrum values to plot
+
+        Returns
+        -------
+        None
+        """
+        # Conversion en numpy pour matplotlib
+        freqs = self.bin_centers.cpu().numpy()
+
+        ps_values = ps_tensor.cpu().numpy()
+        plt.plot(freqs, ps_values, "-", marker="o", label=label, color=color)
+
+        plt.yscale("log")
+        plt.xlabel("frequency(cycles per image)")
+        plt.ylabel("Power Spectrum")
+        plt.title("Power Spectrum Radial")
+        plt.grid(True, which="both", ls="-", alpha=0.5)
+        plt.legend()

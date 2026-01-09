@@ -3,3 +3,4 @@
 __pycache__/
 docs/build/
 *.pyc
+my_tests.ipynb
