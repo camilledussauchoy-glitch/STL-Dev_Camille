@@ -119,7 +119,7 @@ class ST_Operator:
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
         # Power spectrum computation
-        PS=False,
+        compute_PS=False,
         PS_ref=None,
     ):
         """
@@ -166,7 +166,7 @@ class ST_Operator:
         self.mask_st = mask_st
 
         # Power spectrum computation
-        self.PS = PS
+        self.compute_PS = compute_PS
         self.PS_ref = PS_ref
 
     ########################################
@@ -229,7 +229,7 @@ class ST_Operator:
         scale_ft=None,
         flatten=None,
         mask_st=None,
-        PS=None,
+        compute_PS=None,
         PS_ref=None,
     ):
         """
@@ -287,7 +287,7 @@ class ST_Operator:
             mask to be applied when flatten ST statistics
 
         # Power spectrum computation
-        - PS : bool
+        - compute_PS : bool
             whether to compute power spectrum coefficients in addition to ST statistics
 
 
@@ -329,7 +329,7 @@ class ST_Operator:
         flatten = self.flatten if flatten is None else flatten
         mask_st = self.mask_st if mask_st is None else mask_st
 
-        PS = self.PS if PS is None else PS
+        compute_PS = self.compute_PS if compute_PS is None else compute_PS
         PS_ref = self.PS_ref if PS_ref is None else PS_ref
 
         # Put in torch or relevant bk
@@ -359,14 +359,14 @@ class ST_Operator:
             Nb,
             Nc,
             self.wavelet_op,
-            PS,
+            compute_PS,
         )
 
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
-        if PS:
-            stl_PS = data.get_PS_op()
-            data_st.PS_val = stl_PS.apply(data)
+        if compute_PS:
+            PS_op = data.get_PS_op()
+            data_st.PS = PS_op.apply(data)
 
         if SC == "ScatCov":
             data_st.S1 = bk.zeros((Nb, Nc, J, L))
@@ -399,9 +399,7 @@ class ST_Operator:
 
         for j3 in range(J):
             # Compute first convolution and modulus
-            data_l1 = self.wavelet_op.apply(
-                l_data, j=j3, pbc=pbc, target_fourier_status=False
-            )  # (Nb,Nc,L,N3)
+            data_l1 = self.wavelet_op.apply(l_data, j=j3, pbc=pbc)  # (Nb,Nc,L,N3)
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
 
             if False and self.wavelet_op.mask_full_res is not None:
@@ -531,24 +529,24 @@ class ST_Operator:
         elif norm == "store_ref":
             if SC == "ScatCov" and self.S2_ref is not None:
                 print("Replacing existing S2_ref in ST_Op")
-            if PS and self.PS_ref is not None:
+            if compute_PS and self.PS_ref is not None:
                 print("Replacing existing PS_ref in ST_Op")
             data_st.to_norm(norm="self")
             if SC == "ScatCov":
                 self.S2_ref = data_st.S2_ref
-            if PS:
+            if compute_PS:
                 self.PS_ref = data_st.PS_ref
 
         elif norm == "load_ref":
             if SC == "ScatCov" and S2_ref is None:
                 raise Exception("S2_ref should be stored in the ST_Operator")
-            if PS and PS_ref is None:
+            if compute_PS and PS_ref is None:
                 raise Exception("PS_ref should be stored in the ST_Operator")
 
             kwargs = {}
             if SC == "ScatCov":
                 kwargs["S2_ref"] = S2_ref
-            if PS:
+            if compute_PS:
                 kwargs["PS_ref"] = PS_ref
 
             # Appel avec seulement les bons arguments

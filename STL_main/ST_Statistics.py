@@ -90,7 +90,21 @@ class ST_Statistics:
 
     ########################################
     def __init__(
-        self, DT, N0, J, L, WType, SC, jmin, jmax, dj, pbc, Nb, Nc, wavelet_op, PS
+        self,
+        DT,
+        N0,
+        J,
+        L,
+        WType,
+        SC,
+        jmin,
+        jmax,
+        dj,
+        pbc,
+        Nb,
+        Nc,
+        wavelet_op,
+        compute_PS,
     ):
         """
         Constructor, see details above.
@@ -132,7 +146,7 @@ class ST_Statistics:
         self.mask_st = None  # Not used in flatten method for now
 
         # Power spectrum computation
-        self.PS = PS
+        self.compute_PS = compute_PS
 
     ########################################
     def to_norm(self, norm=None, S2_ref=None, PS_ref=None):
@@ -182,9 +196,9 @@ class ST_Statistics:
                 )
                 self.S2_ref = S2_ref
 
-            if self.PS:
-                PS_ref = self.PS_val * 1.0
-                self.PS_val = self.PS_val / PS_ref
+            if self.compute_PS:
+                PS_ref = self.PS * 1.0
+                self.PS = self.PS / PS_ref
                 self.PS_ref = PS_ref
 
             self.norm = True
@@ -196,7 +210,7 @@ class ST_Statistics:
                 raise Exception("ST statistics are already normalized")
             if self.SC == "ScatCov" and S2_ref is None:
                 raise Exception("S2_ref should be given")
-            if self.PS and PS_ref is None:
+            if self.compute_PS and PS_ref is None:
                 raise Exception("PS_ref should be given")
 
             # Perform normalization and store reference
@@ -212,8 +226,8 @@ class ST_Statistics:
                 )
                 self.S2_ref = S2_ref
 
-            if self.PS:
-                self.PS_val = self.PS_val / PS_ref
+            if self.compute_PS:
+                self.PS = self.PS / PS_ref
                 self.PS_ref = PS_ref
 
             # Store normalization parameters
@@ -333,10 +347,10 @@ class ST_Statistics:
                 bk.mean(self.S2, 0),
                 bk.mean(self.S3, 0),
                 bk.mean(self.S4, 0),
-            ] + ([bk.mean(self.PS_val, 0)] if self.PS else [])
+            ] + ([bk.mean(self.PS, 0)] if self.compute_PS else [])
         else:
             stats = [self.S1, self.S2, self.S3, self.S4] + (
-                [self.PS_val] if self.PS else []
+                [self.PS] if self.compute_PS else []
             )
 
         # Flatten each, remove NaNs, concat

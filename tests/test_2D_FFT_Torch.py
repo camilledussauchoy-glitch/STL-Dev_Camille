@@ -22,7 +22,7 @@ from STL_main.STL_2D_FFT_Torch import STL_2D_FFT_Torch as DataClass
 
 def test_DataClass_mean():
 
-    # test DataClass instanciation over basic data
+    # test DataClass instantiation over basic data
     data = DataClass(array=np.load(DATA_TEST_PATH / "Turb_6.npy")[0])
 
     # test wavelet operator building
@@ -45,9 +45,9 @@ def test_DataClass_cov():
     assert torch.allclose(wavelet_op.cov(data), torch.var(data.array), rtol=1e-3)
 
 
-def test_DataClass_no_standard():
+def test_DataClass_downsample():
 
-    # test DataClass instanciation over data
+    # test DataClass instantiation over data
     data = DataClass(array=np.load(DATA_TEST_PATH / "Turb_6.npy"))
 
     # test wavelet operator building
@@ -68,4 +68,4 @@ def test_DataClass_no_standard():
 if __name__ == "__main__":
     test_DataClass_mean()
     test_DataClass_cov()
-    test_DataClass_no_standard()
+    test_DataClass_downsample()
