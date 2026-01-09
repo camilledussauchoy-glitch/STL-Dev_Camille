@@ -251,9 +251,8 @@ class STL_2D_FFT_Torch:
         return data
 
     ###########################################################################
-    def get_wavelet_op(self, J=None, L=4, pbc=None, **kwargs):
-        if J is None:
-            J = np.min([int(np.log2(self.N0[0])), int(np.log2(self.N0[1]))]) - 2
+    def get_wavelet_op(self, J=None, L=None, pbc=None, **kwargs):
+
         return CrappyWavelateOperator2D_FFT_torch(
             L, J, self.N0, self.DT, device=self.device, dtype=self.dtype, **kwargs
         )
@@ -574,8 +573,12 @@ class CrappyWavelateOperator2D_FFT_torch:
         self.WType = "Crappy"
 
         # Main parameters
-        self.L = L
-        self.J = J
+        self.L = L if L is not None else 4
+        self.J = (
+            J
+            if J is not None
+            else np.min([int(np.log2(N0[0])), int(np.log2(N0[1]))]) - 2
+        )
         self.N0 = N0
         self.DT = DT
         self.device = _get_device(torch.device(device))
@@ -749,13 +752,18 @@ class CrappyWavelateOperator2D_FFT_torch:
             Dimensions on which the mean is computed.
         """
         if data.pbc and data.fourier_status:
+            # not supposed to happen with current ST_op apply method
             if square == False:
                 return data.array[..., 0, 0]
             else:
                 # Parseval identity
                 return maskmean(x=data.array, square=square, dim=dim, mask=None)
         else:
-
+            if data.fourier_status:
+                # not supposed to happen with current ST_op apply method
+                data = data.set_fourier_status(
+                    target_fourier_status=False, inplace=True
+                )
             border = self._get_crop_border_size_method(data=data, wavelet_op=self)
             cropped_array = self._crop(array=data.array, border=border)
 
@@ -767,10 +775,13 @@ class CrappyWavelateOperator2D_FFT_torch:
         Compute the covariance between data1 and data2 on the last two
         dimensions (Nx, Ny).
         """
+
         if data2 is None:
+            compute_variance = True
             data2 = data1
             border = self._get_crop_border_size_method(data=data1, wavelet_op=self)
         else:
+            compute_variance = False
             assert (
                 data1.dg == data2.dg
             ), "data1 and data2 must have the same resolution."
@@ -780,33 +791,37 @@ class CrappyWavelateOperator2D_FFT_torch:
                 self._get_crop_border_size_method(data=data2, wavelet_op=self),
             )
 
+        if remove_mean:
+            raise NotImplementedError("remove_mean is not yet implemented.")
+
         if data1.pbc and data1.fourier_status and data2.pbc and data2.fourier_status:
             # Parseval identity
             return maskmean(
-                x=data1.array * torch.conj(data2.array),
+                x=(
+                    data1.array * torch.conj(data2.array)
+                    if not compute_variance
+                    else data1.modulus().array ** 2
+                ),
                 square=False,
                 dim=dim,
             )
+        elif not data1.pbc or not data2.pbc:
+            data1 = data1.set_fourier_status(target_fourier_status=False, inplace=True)
+            data2 = data2.set_fourier_status(target_fourier_status=False, inplace=True)
 
-        data1 = data1.set_fourier_status(target_fourier_status=False, inplace=False)
-        data2 = data2.set_fourier_status(target_fourier_status=False, inplace=False)
+            cropped_array = self._crop(
+                array=(
+                    data1.array * torch.conj(data2.array)
+                    if not compute_variance
+                    else data1.modulus().array ** 2
+                ),
+                border=border,
+            )
 
-        x = data1.array
-        y = data2.array
+            return maskmean(x=cropped_array, square=False, dim=dim)
 
-        if remove_mean:
-            raise NotImplementedError("remove_mean is not yet implemented.")
-            # x_c = x - x.mean(dim=dim, keepdim=True)
-            # y_c = y - y.mean(dim=dim, keepdim=True)
         else:
-            x_c = x
-            y_c = y
-
-        cropped_array = self._crop(array=x_c * torch.conj(y_c), border=border)
-
-        cov = maskmean(x=cropped_array, square=False, dim=dim)
-
-        return cov
+            raise NotImplementedError("Unusual case, to be investigated.")
 
     ###########################################################################
     def apply(self, data, j=None, target_fourier_status=None, **kwargs):

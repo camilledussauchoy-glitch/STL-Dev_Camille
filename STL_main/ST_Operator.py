@@ -454,7 +454,7 @@ class ST_Operator:
                     ##############################################################################
                     data_st.S4[:, :, j1, j2, j3, :, :, :] = self.wavelet_op.cov(
                         data_l1m_l2[j1][:, :, :, None],
-                        data_l1m_l2[j2][:, :, None],
+                        data_l1m_l2[j2][:, :, None] if j1 != j2 else None,
                         pbc=pbc,
                     )  # (Nb,Nc,L1,L2,L3)
 
