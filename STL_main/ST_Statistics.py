@@ -82,11 +82,29 @@ class ST_Statistics:
     # ST statistics
     - S1, S2, S2p, S3, S4 : array of relevant size to store the ST statistics
 
+    # Power Spectrum
+    - PS : bool
+        whether power spectrum coefficients are computed
+
     """
 
     ########################################
     def __init__(
-        self, DT, N0, J, L, WType, SC, jmin, jmax, dj, pbc, Nb, Nc, wavelet_op
+        self,
+        DT,
+        N0,
+        J,
+        L,
+        WType,
+        SC,
+        jmin,
+        jmax,
+        dj,
+        pbc,
+        Nb,
+        Nc,
+        wavelet_op,
+        compute_PS,
     ):
         """
         Constructor, see details above.
@@ -125,10 +143,13 @@ class ST_Statistics:
         self.angular_ft = False
         self.scale_ft = False
         self.flatten = False
-        self.mask_st = None
+        self.mask_st = None  # Not used in flatten method for now
+
+        # Power spectrum computation
+        self.compute_PS = compute_PS
 
     ########################################
-    def to_norm(self, norm=None, S2_ref=None):
+    def to_norm(self, norm=None, S2_ref=None, PS_ref=None):
         """
         Normalize the ST statistics.
         Parameters
@@ -136,7 +157,11 @@ class ST_Statistics:
         - norm : str
             type of norm (“self”, “from_ref”)
         - S2_ref : array
+            if self.SC = "ScatCov"
             array of reference S2 coefficients if "from_ref"
+        - PS_ref : array
+            if self.PS = True
+            array of reference Power Spectrum coefficients if "from_ref"
 
         """
 
@@ -169,16 +194,25 @@ class ST_Statistics:
                     S2_ref[:, :, :, None, None, :, None, None]
                     * S2_ref[:, :, None, :, None, None, :, None]
                 )
+                self.S2_ref = S2_ref
+
+            if self.compute_PS:
+                PS_ref = self.PS * 1.0
+                self.PS = self.PS / PS_ref
+                self.PS_ref = PS_ref
+
             self.norm = True
-            self.S2_ref = S2_ref
 
         # Load_ref normalization
         elif norm == "from_ref":
             # Verifications
             if self.norm:
                 raise Exception("ST statistics are already normalized")
-            if S2_ref is None:
+            if self.SC == "ScatCov" and S2_ref is None:
                 raise Exception("S2_ref should be given")
+            if self.compute_PS and PS_ref is None:
+                raise Exception("PS_ref should be given")
+
             # Perform normalization and store reference
             if self.SC == "ScatCov":
                 self.S1 = self.S1 / bk.sqrt(S2_ref)
@@ -190,9 +224,14 @@ class ST_Statistics:
                     S2_ref[:, :, :, None, None, :, None, None]
                     * S2_ref[:, :, None, :, None, None, :, None]
                 )
+                self.S2_ref = S2_ref
+
+            if self.compute_PS:
+                self.PS = self.PS / PS_ref
+                self.PS_ref = PS_ref
+
             # Store normalization parameters
             self.norm = True
-            self.S2_ref = S2_ref
 
         return self
 
@@ -202,6 +241,7 @@ class ST_Statistics:
         Isotropize the set of ST statistics
 
         Note: S2_ref is not isotropized since it is used before this step.
+        Note: if self.PS = True, PS coefficients are already isotropized in PS_operator.
 
         EA: could probably be better vectorized, to be done.
         EA: to be done properly with the backend.
@@ -220,8 +260,10 @@ class ST_Statistics:
         if self.SC == "ScatCov":
 
             # S1 and S2
-            self.S1 = bk.mean(self.S1.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
-            self.S1 = bk.mean(self.S2.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            # self.S1 = bk.mean(self.S1.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            # self.S1 = bk.mean(self.S2.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            self.S1 = bk.mean(self.S1, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            self.S2 = bk.mean(self.S2, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
 
             # S3 and S4
             S3iso = bk.zeros((Nb, Nc, J, J, L))
@@ -305,9 +347,11 @@ class ST_Statistics:
                 bk.mean(self.S2, 0),
                 bk.mean(self.S3, 0),
                 bk.mean(self.S4, 0),
-            ]
+            ] + ([bk.mean(self.PS, 0)] if self.compute_PS else [])
         else:
-            stats = [self.S1, self.S2, self.S3, self.S4]
+            stats = [self.S1, self.S2, self.S3, self.S4] + (
+                [self.PS] if self.compute_PS else []
+            )
 
         # Flatten each, remove NaNs, concat
         flattened_list = []
@@ -328,6 +372,8 @@ class ST_Statistics:
                     f"flattened statistic length {st_flatten.numel()}."
                 )
             st_flatten = st_flatten[mask_st]
+
+        self.st_flatten = st_flatten
 
         return st_flatten
 

@@ -82,6 +82,12 @@ class ST_Operator:
     - mask_st : list of position
         mask to be applied when flatten ST statistics
 
+    # Power spectrum computation
+    - PS : bool
+        whether to compute power spectrum coefficients in addition to ST statistics
+    - PS_ref : array
+        array of reference PS coefficients
+
     Attributes
     ----------
     - parent parameters (see above)
@@ -96,7 +102,6 @@ class ST_Operator:
         data,
         J=None,
         L=None,
-        WType=None,
         SC="ScatCov",
         jmin=None,
         jmax=None,
@@ -109,15 +114,13 @@ class ST_Operator:
         angular_ft=False,
         scale_ft=False,
         flatten=False,
-        wavelet_array=None,
-        wavelet_array_MR=None,
-        dg_max=None,
-        j_to_dg=None,
-        Single_Kernel=None,
         mask_st=None,
         # Optional wavelet operator args
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
+        # Power spectrum computation
+        compute_PS=False,
+        PS_ref=None,
     ):
         """
         Constructor, see details above.
@@ -125,6 +128,7 @@ class ST_Operator:
         # Main parameters
         self.DT = data.DT
         self.N0 = data.N0
+        self.dg = data.dg
 
         # Wavelet transform and related parameters
         wavelet_op_kwargs = {}
@@ -143,7 +147,6 @@ class ST_Operator:
         self.J = self.wavelet_op.J
         self.L = self.wavelet_op.L
         self.WType = self.wavelet_op.WType
-        self.dg = data.dg
 
         # Scattering transform related parameters
         self.SC = SC
@@ -161,6 +164,10 @@ class ST_Operator:
         self.scale_ft = scale_ft
         self.flatten = flatten
         self.mask_st = mask_st
+
+        # Power spectrum computation
+        self.compute_PS = compute_PS
+        self.PS_ref = PS_ref
 
     ########################################
     @classmethod
@@ -222,6 +229,8 @@ class ST_Operator:
         scale_ft=None,
         flatten=None,
         mask_st=None,
+        compute_PS=None,
+        PS_ref=None,
     ):
         """
         Compute the Scattering Transform (ST) of data, which are either stored
@@ -277,6 +286,11 @@ class ST_Operator:
         - mask_st : list of position
             mask to be applied when flatten ST statistics
 
+        # Power spectrum computation
+        - compute_PS : bool
+            whether to compute power spectrum coefficients in addition to ST statistics
+
+
         Output
         ----------
         - data_st : ST_Statistics instance, or 1D array
@@ -315,6 +329,9 @@ class ST_Operator:
         flatten = self.flatten if flatten is None else flatten
         mask_st = self.mask_st if mask_st is None else mask_st
 
+        compute_PS = self.compute_PS if compute_PS is None else compute_PS
+        PS_ref = self.PS_ref if PS_ref is None else PS_ref
+
         # Put in torch or relevant bk
         if type(data.array) == np.ndarray:
             data.array = bk.from_numpy(data.array)
@@ -342,11 +359,16 @@ class ST_Operator:
             Nb,
             Nc,
             self.wavelet_op,
+            compute_PS,
         )
 
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
-        if self.SC == "ScatCov":
+        if compute_PS:
+            PS_op = data.get_PS_op()
+            data_st.PS = PS_op.apply(data)
+
+        if SC == "ScatCov":
             data_st.S1 = bk.zeros((Nb, Nc, J, L))
             data_st.S2 = bk.zeros((Nb, Nc, J, L))
             data_st.S3 = (
@@ -403,7 +425,6 @@ class ST_Operator:
 
             data_l1m_l2 = {}
             for j2 in range(j3 + 1):
-
                 data_l1m_l2_j2 = self.wavelet_op.apply(
                     data_l1m[j2], j=j3, pbc=pbc
                 )  # (Nb,Nc,L2,L3,N3)
@@ -438,7 +459,7 @@ class ST_Operator:
                     )  # (Nb,Nc,L1,L2,L3)
 
             # Downsample at Nj3
-            if (data_st.DT != "2D_FFT_Torch") and j3 < J - 1:
+            if j3 < J - 1:
 
                 self.wavelet_op.downsample(
                     data=l_data,
@@ -457,6 +478,48 @@ class ST_Operator:
                         pbc=pbc,
                     )  # (Nb,Nc,j3+1,L,N3)
 
+        """
+        # Version to compute ST statistics for STL_FFT_Torch from fullJ mode 
+
+        # --- Compute first convolution and modulus ---
+        print(self.wavelet_op.wavelet_array.shape)
+        data_l1 = self.wavelet_op.apply(data, target_fourier_status=False)  # (Nb,Nc,J,L,N)
+        data_l1m = data_l1.modulus(inplace=True)  # (Nb,Nc,J,L,N)
+
+        # --- Compute S1 and S2 ---
+        data_st.S1 = self.wavelet_op.mean(data_l1m) # (Nb,Nc,J,L)
+        data_st.S2 = self.wavelet_op.mean(data_l1m, square=True)  # (Nb,Nc,J,L)  
+
+        for j3 in range(J):
+            data_l1_tmp = data_l1.copy()  # (Nb,Nc,j3+1,L,N)
+            data_l1m_tmp = data_l1m.copy()
+            # (Nb,Nc,j3+1,L,N)
+            data_l1_tmp.array = data_l1_tmp.array[:, :, : j3 + 1]
+            data_l1m_tmp.array = data_l1m_tmp.array[:, :, : j3 + 1]
+
+            # Downsample at Nj3
+            self.wavelet_op.downsample(data_l1_tmp, j3)  # (Nb,Nc,j3+1,L,N3)
+            self.wavelet_op.downsample(data_l1m_tmp, j3)  # (Nb,Nc,j3+1,L,N3)
+
+            # Compute |I*psi2|*psi3                      #(Nb,Nc,j3+1,L2,L3,N3)
+            data_l1m_l2 = self.wavelet_op.apply(data_l1m_tmp, j=j3)
+
+            for j2 in range(j3 + 1):
+                # S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3)
+                data_st.S3[:, :, j2, j3, :, :] = self.wavelet_op.cov(
+                    data_l1m_l2[:, :, j2],
+                    data_l1_tmp[:, :, j3, None]
+                )  # (Nb,Nc,L2,L3,N3) x (Nb,Nc,1,L3,N3)
+
+                for j1 in range(j2 + 1):
+                    # S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3)
+                    data_st.S4[:, :, j1, j2, j3, :, :, :] = self.wavelet_op.cov(
+                        data_l1m_l2[:, :, j1, :, None],
+                        data_l1m_l2[:, :, j2, None, :]
+                    )  # (Nb,Nc,L1, 1,L3,N3) x (Nb,Nc, 1,L2,L3,N3)
+
+        """
+
         ########################################
         # Additional transform/compression
         ########################################
@@ -464,14 +527,30 @@ class ST_Operator:
         if norm is None:
             pass
         elif norm == "store_ref":
-            if self.S2_ref is not None:
-                print("S2_ref of the ST_Op is overwrote")
+            if SC == "ScatCov" and self.S2_ref is not None:
+                print("Replacing existing S2_ref in ST_Op")
+            if compute_PS and self.PS_ref is not None:
+                print("Replacing existing PS_ref in ST_Op")
             data_st.to_norm(norm="self")
-            self.S2_ref = data_st.S2_ref
+            if SC == "ScatCov":
+                self.S2_ref = data_st.S2_ref
+            if compute_PS:
+                self.PS_ref = data_st.PS_ref
+
         elif norm == "load_ref":
-            if S2_ref is None:
+            if SC == "ScatCov" and S2_ref is None:
                 raise Exception("S2_ref should be stored in the ST_Operator")
-            data_st.to_norm(norm="from_ref", S2_ref=self.S2_ref)
+            if compute_PS and PS_ref is None:
+                raise Exception("PS_ref should be stored in the ST_Operator")
+
+            kwargs = {}
+            if SC == "ScatCov":
+                kwargs["S2_ref"] = S2_ref
+            if compute_PS:
+                kwargs["PS_ref"] = PS_ref
+
+            # Appel avec seulement les bons arguments
+            data_st.to_norm(norm="from_ref", **kwargs)
 
         if iso:
             data_st.to_iso()
@@ -483,6 +562,6 @@ class ST_Operator:
             data_st.to_scale_ft()
 
         if flatten:
-            data_st.flatten(mask_st)
+            data_st.to_flatten(mask_st)
 
         return data_st

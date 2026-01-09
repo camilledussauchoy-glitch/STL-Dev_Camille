@@ -1,6 +1,7 @@
 sphinx
 sphinx-rtd-theme
 sphinx-autodoc-typehints
+matplotlib
 pytest
 numpy
 torch

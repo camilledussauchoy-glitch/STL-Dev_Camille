@@ -2,113 +2,75 @@
 Created on Wed Nov 14:07 2018
 """
 
+import math
+
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from STL_main.torch_backend import to_torch_tensor
+from STL_main.ST_Operator import ST_Operator
+from STL_main.torch_backend import (
+    _DEFAULT_DEVICE,
+    _DEFAULT_DTYPE,
+    _get_device,
+    _get_dtype,
+    maskmean,
+    to_torch_tensor,
+)
 
 
+###############################################################################
+###############################################################################
 class STL_2D_FFT_Torch:
     """
     Class for 2D planar STL FFT using PyTorch
     """
 
-    @staticmethod
-    def covariance(
-        array1, fourier_status1, array2, fourier_status2, mask=None, remove_mean=False
+    def __init__(
+        self, array, dg=None, N0=None, pbc=False, conv_history=[], fourier_status=False
     ):
-        """
-        Compute the covariance of two tensors on their last two dimensions.
-
-        Covariance can be computed either in real space of in Fourier space.
-        if mask is None:
-            - in real space if they are both in real space
-            - in Fourier space if they are both in Fourier space
-            - in real space if they are in different space
-        else:
-            - in real space
-
-        A mask in real space can be given. It should be of unit mean.
-
-        The mean of array1 and array2 are removed before the covariance computation
-        only if remove_mean = True.
-
-        Parameters
-        ----------
-        array1 : torch.Tensor (complex or real)
-            First array whose covariance has to be computed.
-        fourier_status1 : Bool
-            Fourier status of array1
-        array2 : torch.Tensor (complex or real)
-            Second array whose covariance has to be computed.
-        fourier_status2 : Bool
-            Fourier status of array2
-        mask : torch.Tensor, optional
-            Mask tensor whose last dimensions should match with input array.
-            It should be of unit mean.
-
-        Returns
-        -------
-        torch.Tensor
-            Cov of input array1 and array2 on the last two dimensions.
-
-        Remark and to do
-        -------
-        - Remove_mean = True not implemented. To be seen if this is necessary.
-        """
-
-        if remove_mean:
-            raise NotImplementedError("Remove mean is yet not implemented.")
-
-        if mask is None and fourier_status1 and fourier_status2:
-            # Compute covariance (complex values)
-            cov = torch.mean(array1 * array2.conj(), dim=(-2, -1))
-        else:
-            # We pass everything to real space
-            if fourier_status1:
-                _array1 = torch.fft.ifft2(array1, norm="ortho")
-            else:
-                _array1 = array1
-            if fourier_status2:
-                _array2 = torch.fft.ifft2(array2, norm="ortho")
-            else:
-                _array2 = array2
-            # Define mask
-            mask = 1 if mask is None else mask
-            # Compute covariance (complex values)
-            cov = torch.mean(_array1 * _array2.conj() * mask, dim=(-2, -1))
-
-        return cov
-
-    def __init__(self, array, fourier_status=False):
         """
         Initialize the STL_2D_FFT_torch class.
 
-        fourier_status: True if data is in Fourier space.
+        Parameters
+        ----------
+        array : np.ndarray or torch.Tensor
+            Input 2D array (NumPy or PyTorch tensor).
+        dg : int, optional
+            Data resolution. If None, set to 0.
+        N0 : tuple of int, optional
+            Original size of the array. Required if dg is provided.
+        conv_history : list of int, optional
+            History of convolutions applied to the data. e.g., [j1, j2] if data has been convolved
+            successively with wavelets at scales j1 and j2.
+        fourier_status : bool, optional
+            Indicates if the data is in Fourier space (True) or real space (False).
         """
-        self.array = self.to_array(array)
+
+        # Main
+        self.DT = "Planar2D_FFT_torch"
+        if dg is None:
+            self.dg = 0
+            self.N0 = array.shape[-2:]
+        else:
+            self.dg = dg
+            if N0 is None:
+                raise ValueError("dg is given, N0 should not be None")
+            self.N0 = N0
+
+        self.array = self._to_array(array)
         self.fourier_status = fourier_status
 
-        self.DT = "2D_FFT_Torch"
-        self.MR = False
-        self.dg = 0
-        self.N0 = self.findN()
+        self.device = self.array.device
+        self.dtype = self.array.dtype
 
-    def __getitem__(self, key):
-        """
-        To slice directly the array attribute. Produce a view of array, to
-        match with usual practices, allowing to conveniently pass only part
-        of an instance.
-        """
-        new = self.copy(empty=False)
-        new.array = self.array[key]
+        self.pbc = pbc
+        self.conv_history = conv_history
 
-        return new
-
-    def to_array(self, array):
+    ###########################################################################
+    def _to_array(self, array):
         """
         Transform input array (NumPy or PyTorch) into a PyTorch tensor.
-        Should return None if None.
 
         Parameters
         ----------
@@ -122,28 +84,16 @@ class STL_2D_FFT_Torch:
         """
 
         if array is None:
-            return None
-        elif isinstance(array, list):
-            return array
+            raise ValueError("Input array should not be None")
         else:
             # Choose device: use GPU if available, otherwise CPU
+            # matches the input tensor dtype to the device
             return to_torch_tensor(array)
 
-    def findN(self):
-        """
-        Find the dimensions of the 2D planar data, which are expected to be the
-        last two dimensions of the array.
-
-        Returns
-        -------
-        N : tuple of int
-            The spatial dimensions  of the 2D planar data.
-        """
-        return tuple(self.array.shape[-2:])
-
+    ###########################################################################
     def copy(self, empty=False):
         """
-        Copy an instance.
+        Copy a STL_2D_FFT_Torch instance.
         Array is put to None if empty==True.
 
         Parameters
@@ -151,170 +101,128 @@ class STL_2D_FFT_Torch:
         - empty : bool
             If True, set array to None.
 
-        Output
+        Returns
         ----------
         - STL_2D_FFT_Torch
-           copy of self
+            Copied instance.
         """
+        new = object.__new__(STL_2D_FFT_Torch)
 
-        return self.__class__(
-            self.array if not empty else None, fourier_status=self.fourier_status
-        )
+        # Copy metadata
+        for k, v in self.__dict__.items():
+            if k != "array":
+                setattr(new, k, v)
 
-    # def copy(self, empty=False):
-    #     """
-    #     Copy a STL_2D_Kernel_Torch instance.
-    #     Array is put to None if empty==True.
+        # Copy array
+        if empty:
+            new.array = None
+        else:
+            new.array = (
+                self.array.clone() if isinstance(self.array, torch.Tensor) else None
+            )
 
-    #     Parameters
-    #     ----------
-    #     - empty : bool
-    #         If True, set array to None.
+        return new
 
-    #     Output
-    #     ----------
-    #     - STL_2D_Kernel_Torch
-    #        copy of self
-    #     """
-    #     new = object.__new__(STL_2D_FFT_Torch)
+    ###########################################################################
+    ### Note: slicing should be on MR=True data, to be removed
+    def __getitem__(self, key):
+        """
+        To slice directly the array attribute.
 
-    #     # Copy metadata
-    #     new.DT = self.DT
-    #     new.MR = self.MR
-    #     new.N0 = self.N0
-    #     new.dg = self.dg
-    #     new.fourier_status = self.fourier_status
+        Parameters
+        ----------
+        - key : int or slice
+            Slicing key.
 
-    #     # Copy array
-    #     if empty:
-    #         new.array = None
-    #     else:
-    #         if self.MR:
-    #             new.array = [a.clone() if isinstance(a, torch.Tensor) else None
-    #                          for a in self.array]
-    #         else:
-    #             new.array = (self.array.clone()
-    #                          if isinstance(self.array, torch.Tensor) else None)
+        Returns
+        -------
+        - STL_2D_FFT_Torch
+            New STL_2D_FFT_Torch instance with sliced array.
+        """
+        new = self.copy(empty=False)
+        new.array = self.array[key]
 
-    #     return new
+        return new
 
+    ###########################################################################
     def modulus(self, inplace=False):
         """
-        Take the modulus of the array attribute.
+        Compute the modulus (absolute value) of the array attribute of data.
 
         Parameters
         ----------
-        inplace: bool
-            if inplace is True, overwrites self.array by its modulus.
+        - inplace : bool
+            If True, acts in-place and returns self.
+            If False, returns a new STL_2D_FFT_Torch instance.
 
         Returns
         -------
-        torch.Tensor
-            Modulus of input tensor.
+        STL_2D_FFT_Torch
+            STL_2D_FFT_Torch instance whose array attribute is the modulus
         """
+        data = self.copy(empty=False) if not inplace else self
 
-        if inplace:
-            output = self
+        data = data.set_fourier_status(target_fourier_status=False, inplace=True)
+
+        data.array = torch.abs(data.array)
+
+        data.dtype = data.array.dtype
+
+        return data
+
+    ###########################################################################
+    def fourier(self, inplace=False):
+        """
+        Compute the Fourier Transform on the last two dimensions of the input tensor.
+
+        Parameters
+        ----------
+        - inplace : bool
+            If True, acts in-place and returns self.
+            If False, returns a new STL_2D_FFT_Torch instance.
+
+        Returns
+        -------
+        STL_2D_FFT_Torch
+            STL_2D_FFT_Torch instance whose array attribute is Fourier domain
+        """
+        data = self.copy(empty=False) if not inplace else self
+
+        if data.fourier_status:
+            return data
         else:
-            output = self.copy()
+            data.array = torch.fft.fft2(data.array, norm="ortho")
+            data.fourier_status = True
+            return data
 
-        output.array = output.array.abs()
-
-        return output
-
-    def mean(self, square=False, mask=None):
-        """
-        Compute the mean of the tensor on its last two dimensions.
-
-        A mask in real space can be given. It should be of unit mean.
-
-        Parameters
-        ----------
-        array : torch.Tensor
-            Input tensor whose mean has to be computed.
-        square : bool
-            If True, compute the quadratic mean.
-        mask : torch.Tensor, optional
-            Mask tensor whose last dimensions should match with input array.
-            It should be of unit mean.
-
-        Returns
-        -------
-        torch.Tensor
-            Mean of input array on the last two dimensions.
-        """
-        if (self.fourier_status) and (mask is None):
-            if square == False:
-                return self.array[..., 0, 0]
-            else:
-                # Parseval identity
-                return torch.mean((self.array.abs()) ** 2, dim=(-2, -1))
-
-        else:  # Real space
-            # Define unit mask if no mask is given
-            mask = 1 if mask is None else mask
-            if square == False:
-                return torch.mean(self.array * mask, dim=(-2, -1))
-            else:
-                return torch.mean((self.array.abs()) ** 2 * mask, dim=(-2, -1))
-
-    def cov(self, data2=None, mask=None, remove_mean=False):
-        """
-        Compute the covariance between data1=self and data2 on the last two
-        dimensions (Nx, Ny).
-
-        Only works whitout mask.
-        """
-        return self.__class__.covariance(
-            self.array,
-            self.fourier_status,
-            data2.array,
-            data2.fourier_status,
-            mask=mask,
-            remove_mean=remove_mean,
-        )
-
-    def fourier(self):
-        """
-        Compute the Fourier Transform on the last two dimensions of the input
-        tensor.
-
-        Parameters
-        ----------
-        array : torch.Tensor
-            Input tensor for which the Fourier Transform is to be computed.
-
-        Returns
-        -------
-        torch.Tensor
-            Fourier transform of the input tensor along the last two dimensions.
-        """
-        if self.fourier_status:
-            return self.array
-        else:
-            return torch.fft.fft2(self.array, norm="ortho")
-
-    def ifourier(self):
+    ###########################################################################
+    def ifourier(self, inplace=False):
         """
         Compute the inverse Fourier Transform on the last two dimensions of the input
         tensor.
 
         Parameters
         ----------
-        array : torch.Tensor
-            Input tensor for which the inverse Fourier Transform is to be computed.
+        - inplace : bool
+            If True, acts in-place and returns self.
+            If False, returns a new STL_2D_FFT_Torch instance.
 
         Returns
         -------
-        torch.Tensor
-            Inverse Fourier transform of the input tensor along the last two dimensions.
+        STL_2D_FFT_Torch
+            STL_2D_FFT_Torch instance whose array attribute is the Fourier
         """
-        if not self.fourier_status:
-            return self.array
-        else:
-            return torch.fft.ifft2(self.array, norm="ortho")
+        data = self.copy(empty=False) if not inplace else self
 
-    def set_fourier_status(self, target_fourier_status, inplace=True):
+        if not data.fourier_status:
+            return data
+        else:
+            data.array = torch.fft.ifft2(data.array, norm="ortho")
+            data.fourier_status = False
+            return data
+
+    ###########################################################################
+    def set_fourier_status(self, target_fourier_status, inplace=False):
         """
         Put the  in the desired Fourier status (target_fourier_status).
 
@@ -324,79 +232,68 @@ class STL_2D_FFT_Torch:
             Desired Fourier status: True = Fourier space, False = real space.
         - inplace : bool
             If True, acts in-place and returns self.
-            If False, returns a new stl_array instance.
+            If False, returns a new STL_2D_FFT_Torch instance.
+
+        Returns
+        -------
+        STL_2D_FFT_Torch
+            STL_2D_FFT_Torch instance in the desired Fourier status.
         """
-        data = self if inplace else self.copy()
+        data = self.copy(empty=False) if not inplace else self
 
         # If current status differs from desired
         if data.fourier_status != target_fourier_status:
             if target_fourier_status:
-                data.array = data.fourier()
+                data.fourier(inplace=True)
             else:
-                data.array = data.ifourier()
-            # update the fourier_status
-            data.fourier_status = target_fourier_status
+                data.ifourier(inplace=True)
 
         return data
 
-    def get_wavelet_op(self, J=None, L=4, WType="Crappy"):
-
-        # Default values
+    ###########################################################################
+    def get_wavelet_op(self, J=None, L=4, pbc=None, **kwargs):
         if J is None:
-            J = int(np.log2(min(self.N0))) - 2
+            J = np.min([int(np.log2(self.N0[0])), int(np.log2(self.N0[1]))]) - 2
+        return CrappyWavelateOperator2D_FFT_torch(
+            L, J, self.N0, self.DT, device=self.device, dtype=self.dtype, **kwargs
+        )
 
-        # Wtype-specific construction
-        if WType == "Crappy":
-            return CrappyWavelateOperator2D_FFT_torch(J, L, self.N0)
-        else:
-            raise Exception("Wavelet type not yet supported.")
+    ###############################################################################
+    def get_ST_op(
+        self,
+        J=None,
+        L=None,
+        jmin=None,
+        jmax=None,
+        dj=None,
+        get_crop_border_size_method=None,
+    ):
 
+        return ST_Operator(
+            self,
+            J=J,
+            L=L,
+            jmin=jmin,
+            jmax=jmax,
+            dj=dj,
+            pbc=self.pbc,
+            get_crop_border_size_method=get_crop_border_size_method,
+        )
 
-def gaussian_2d_rotated(mu, sigma, angle, size):
-    """
-    Generate a rotated 2D Gaussian centered at an offset mu along the rotated
-    axis from image center.
+    ###############################################################################
+    def get_PS_op(self, n_bins=None):
 
-    Parameters
-    ----------
-    mu : float
-        Offset along the rotated axis from the image center (in pixels).
-    sigma : float
-        Isotropic standard deviation (spread).
-    angle : float
-        Rotation angle in radians (0 to pi).
-    size : tuple of int
-        Grid size (M, N) = (height, width).
+        size = min(self.N0)
 
-    Returns
-    -------
-    torch.Tensor
-        A 2D Gaussian (M, N) with unit L2 norm.
-    """
+        if n_bins is None:
+            n_bins = 16
 
-    M, N = size
-    x = torch.linspace(0, M - 1, M)
-    y = torch.linspace(0, N - 1, N)
-    X, Y = torch.meshgrid(x, y, indexing="ij")
-
-    # Image center
-    cx = M / 2
-    cy = N / 2
-
-    # Compute offset from center along rotated axis
-    cos_a = torch.cos(torch.tensor(angle))
-    sin_a = torch.sin(torch.tensor(angle))
-    center_x = cx - mu * sin_a
-    center_y = cy + mu * cos_a
-
-    # Gaussian centered at (center_x, center_y)
-    G = torch.exp(-((X - center_x) ** 2 + (Y - center_y) ** 2) / (2 * sigma**2))
-
-    # Threshold
-    eps = 10**-1
-    G[G < eps] = 0
-
-    return G
+        return PS_operator_2D_FFT_torch(
+            size=size,
+            n_bins=n_bins,
+            device=self.device,
+            dtype=self.dtype,
+        )
 
 
 class CrappyWavelateOperator2D_FFT_torch:
@@ -476,8 +373,6 @@ class CrappyWavelateOperator2D_FFT_torch:
         Only if if Single_Kernel==False.
     - Single_Kernel : bool
         if convolution done at all scales with the same L oriented wavelets
-    - mask_opt : bool
-        If it is possible to do use masked during the convolution
 
     Questions and to do
     ----------
@@ -497,8 +392,57 @@ class CrappyWavelateOperator2D_FFT_torch:
 
     """
 
+    # class constants
+    SAFETY_PREFACTOR = math.sqrt(4 * math.log(10))  # point where Gaussian is ~1% of max
+
     @staticmethod
-    def gaussian_bank(J, L, size, base_mu=None, base_sigma=None):
+    def gaussian_2d_rotated(mu, sigma, angle, size):
+        """
+        Generate a rotated 2D Gaussian centered at an offset mu along the rotated
+        axis from image center.
+
+        Parameters
+        ----------
+        mu : float
+            Offset along the rotated axis from the image center (in pixels).
+        sigma : float
+            Isotropic standard deviation (spread).
+        angle : float
+            Rotation angle in radians (0 to pi).
+        size : tuple of int
+
+        Returns
+        -------
+        torch.Tensor
+            A 2D Gaussian of shape [Nx, Ny].
+        """
+
+        M, N = size
+        x = torch.linspace(0, M - 1, M)
+        y = torch.linspace(0, N - 1, N)
+        X, Y = torch.meshgrid(x, y, indexing="ij")
+
+        # Image center
+        cx = M / 2
+        cy = N / 2
+
+        # Compute offset from center along rotated axis
+        cos_a = torch.cos(torch.tensor(angle))
+        sin_a = torch.sin(torch.tensor(angle))
+        center_x = cx - mu * sin_a
+        center_y = cy + mu * cos_a
+
+        # Gaussian centered at (center_x, center_y)
+        G = torch.exp(-((X - center_x) ** 2 + (Y - center_y) ** 2) / (2 * sigma**2))
+
+        # Threshold
+        eps = 10**-1
+        G[G < eps] = 0
+
+        return G
+
+    @classmethod
+    def gaussian_bank(cls, J, L, size, base_mu=None, base_sigma=None):
         """
         Generate a bank of rotated and scaled 2D Gaussians.
 
@@ -518,13 +462,13 @@ class CrappyWavelateOperator2D_FFT_torch:
         Returns
         -------
         torch.Tensor
-            A tensor of shape (J, L, M, N), each entry L2-normalized.
+            A tensor of shape [J, L, Nx, Ny], each entry L2-normalized.
         """
-        M, N = size
-        filters_bank = torch.empty((J, L, M, N))
+        Nx, Ny = size
+        filters_bank = torch.empty((J, L, Nx, Ny))
 
         if base_mu is None:
-            base_mu = min(M, N) / (2 * torch.sqrt(torch.tensor(2.0)))
+            base_mu = min(Nx, Ny) / (2 * torch.sqrt(torch.tensor(2.0)))
         if base_sigma is None:
             base_sigma = base_mu / (2 * torch.sqrt(torch.tensor(2.0)))
 
@@ -533,7 +477,7 @@ class CrappyWavelateOperator2D_FFT_torch:
             mu = base_mu / (2**j)
             for l in range(L):
                 angle = float(l) * torch.pi / L
-                filters_bank[j, l] = gaussian_2d_rotated(mu, sigma, angle, size)
+                filters_bank[j, l] = cls.gaussian_2d_rotated(mu, sigma, angle, size)
 
         # Return the zero frequency to (0,0), and put it to zero
         filters_bank = torch.fft.fftshift(filters_bank, dim=(-2, -1))
@@ -541,37 +485,128 @@ class CrappyWavelateOperator2D_FFT_torch:
 
         return filters_bank
 
-    def __init__(self, J, L, N0):
+    @classmethod
+    def _get_crop_border_size_largest_scale_second_layer(cls, data, wavelet_op):
+        sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
+        if data.pbc:
+            return 0
+        else:
+            deepest_layer = 2
+            return math.ceil(
+                deepest_layer
+                * (2 ** (wavelet_op.J - 1 - data.dg))
+                * cls.SAFETY_PREFACTOR
+                / (2 * math.pi * sigma0)
+            )
+
+    @classmethod
+    def _get_crop_border_size_largest_scale_layer_flexible(cls, data, wavelet_op):
+        sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
+        if data.pbc or len(data.conv_history) == 0:
+            return 0
+        else:
+            return math.ceil(
+                len(data.conv_history)
+                * (2 ** (wavelet_op.J - 1 - data.dg))
+                * cls.SAFETY_PREFACTOR
+                / (2 * math.pi * sigma0)
+            )
+
+    @classmethod
+    def _get_crop_border_size_fully_flexible(cls, data, wavelet_op):
+        sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
+
+        if data.pbc or len(data.conv_history) == 0:
+            return 0
+        elif len(data.conv_history) == 1:
+            return math.ceil(
+                2 ** (data.conv_history[0] - data.dg)
+                * cls.SAFETY_PREFACTOR
+                / (2 * math.pi * sigma0)
+            )
+        elif len(data.conv_history) == 2:
+            first_conv_border_downgraded = math.ceil(
+                2 ** (data.conv_history[0] - data.conv_history[-1])
+                * cls.SAFETY_PREFACTOR
+                / (2 * math.pi * sigma0)
+            )
+            return math.ceil(
+                2 ** (data.conv_history[-1] - data.dg)
+                * (
+                    first_conv_border_downgraded
+                    + cls.SAFETY_PREFACTOR / (2 * math.pi * sigma0)
+                )
+            )
+
+        else:
+            raise ValueError("Invalid data conv_history.")
+
+    def __init__(
+        self,
+        L,
+        J,
+        N0,
+        DT="Planar2D_FFT_torch",
+        device=_DEFAULT_DEVICE,
+        dtype=_DEFAULT_DTYPE,
+        get_crop_border_size_method=None,
+    ):
         """
         Constructor, see details above.
+
+        Parameters
+        ----------
+        - L : int
+            number of orientations
+        - J : int
+            number of scales
+        - N0 : tuple of int
+            initial size of fourier domain array (same as data to be processed)
+        - DT : str
+            Type of data (1d, 2d planar, HealPix, 3d)
+        - device : torch.device
+            Device to store the wavelet arrays.
+        - dtype : torch.dtype
+            Data type to store the wavelet arrays.
+        - get_crop_border_size_method : function
+            Method to compute the crop border size.
         """
-        # Main parameters
-        self.DT = "2D_FFT_Torch"
-        self.N0 = N0
-        self.J = J
-        self.L = L
         self.WType = "Crappy"
+
+        # Main parameters
+        self.L = L
+        self.J = J
+        self.N0 = N0
+        self.DT = DT
+        self.device = _get_device(torch.device(device))
+        self.dtype = _get_dtype(dtype=dtype, device=self.device)
+
         self.wavelet_array = None
         self.wavelet_array_MR = None
         self.dg_max = None
         self.j_to_dg = None
-        self.Single_Kernel = None
-        self.mask_opt = None
+        self.build()  # Build all the wavelets-related attributes.
 
-        # Build all the wavelets-related attributes.
-        # Also fix J, L, and WType values if None.
-        self.build()
+        if get_crop_border_size_method is not None:
+            self._get_crop_border_size_method = get_crop_border_size_method
+        else:
+            self._get_crop_border_size_method = (
+                self.__class__._get_crop_border_size_fully_flexible
+            )
 
+    ###########################################################################
     def build(self):
         """
-        Build wavelet set and subsampling_factors, see details above.
-        The standard values for J, L, and WType are also fixed if None.
+        Build attributes related to the wavelet set and in multi-resolution framework:
+            - wavelet_array
+            - wavelet_array_MR
+            - dg_max
+            - j_to_dg
         """
-
-        # Build the wavelet set
-
-        # Create the full resolution Wavelet set
-        self.wavelet_array = self.__class__.gaussian_bank(self.J, self.L, self.N0)
+        # Create the full resolution Wavelet set (in fourier space plus fftshifted)
+        self.wavelet_array = self.__class__.gaussian_bank(
+            self.J, self.L, self.N0
+        )  # [J, L, N0x, N0y]
 
         # Find dg_max (with a min size of 16 = 2 * 8)
         # To avoid storing tensors at the same effective resolution
@@ -582,109 +617,199 @@ class CrappyWavelateOperator2D_FFT_torch:
         self.j_to_dg = []
         for j in range(self.J):
             dg = min(j, self.dg_max)
-            subsampled_wavelet = self.downsample(
+            subsampled_wavelet = self.__class__.downsample(
                 data=STL_2D_FFT_Torch(array=self.wavelet_array[j], fourier_status=True),
                 dg_out=dg,
                 inplace=True,
                 target_fourier_status=True,
-            )
+            )  # [L, Njx, Njy]
             assert subsampled_wavelet.fourier_status
             self.wavelet_array_MR.append(subsampled_wavelet.array)
             self.j_to_dg.append(dg)
 
-    ###########################################################################
-    def wavelet_j(self, j):
-        """
-        Return the necessary wavelets to perform the convolution at scale j.
-
-        If Single_Kernel==True, always return the same set of L wavelets.
-        If Single_Kernel==False, return the L wavelets at scale j and at the
-        Nj resolution.
-        """
-
-        if self.Single_Kernel:
-            return self.wavelet_array
-        else:
-            return self.wavelet_array_MR[j]
-
-    ###########################################################################
-    def plot(self, Fourier=None):
-        """
-        Plot the set of wavelets, either in Fourier or real space.
-        Can add a selection of (j,l).
-        """
-
-        # To be done
-
     @staticmethod
-    def wavelet_conv_full(data, wavelet_set, mask=None):
+    def wavelet_conv_full(data, wavelet_set):
         """
         Perform convolutions of data with the entire wavelet set at full resolution.
         WARNING: Sets the data in Fourier space in place if data is in real space.
-        No mask is allowed in this DT.
 
         Parameters
         ----------
-        - data: STL_2D_FFT_Torch instance whose array attribute is a torch.Tensor of size (..., N0)
-            Data to be filtered by the wavelt_set
-        - wavelet_set: torch.Tensor of size (J, L, N0)
+        - data: STL_2D_FFT_Torch instance whose array attribute is a torch.Tensor of size [..., Nx, Ny]
+            Data to be convolved with the wavelt_set
+        - wavelet_set: torch.Tensor of size [J, L, Nx, Ny]
             Wavelet set in Fourier space at all J scales and L orientations
-        - mask: torch.Tensor of size (...,N0) -> None expected
-            Masks for the convolution
 
         Returns
         -------
         - STL_2D_FFT_Torch instance with:
-            - array: torch.Tensor (..., J, L, N0)
+            - array: torch.Tensor [..., J, L, Nx, Ny]
                 Convolution in Fourier space between data and wavelet_set
             - fourier_status: bool
                 True
         """
-        if mask is not None:
-            raise NotImplementedError("Mask is not yet allowed in STL_2D_FFT_Torch.")
-
         # Set data in Fourier space in place
         data = data.set_fourier_status(target_fourier_status=True, inplace=True)
         return STL_2D_FFT_Torch(
             array=data[..., None, None, :, :].array * wavelet_set, fourier_status=True
-        )
+        )  # [..., J, L, Nx, Ny]
 
     @staticmethod
-    def wavelet_conv(data, wavelet_j, mask=None):
+    def wavelet_conv(data, wavelet_set_MR, j):
         """
         Perform convolutions of data with a set of L wavelets fixed at a given scale and covering all orientations.
         Both the data and the wavelet should be at the Nj resolution.
         WARNING: Sets the data in Fourier space in place if data is in real space.
-        No mask is allowed in this DT.
 
         Parameters
         ----------
-        - data: STL_2D_FFT_Torch instance whose array attribute is a torch.Tensor of size (..., Nj)
-            Data to be filtered by the wavelt_set, at resolution Nj
-        - wavelet_j: torch.Tensor of size (L, Nj)
-            Wavelet set in Fourier space at scale j and L orientations
-        - mask: list of torch.Tensor of size (...,Nj) -> None expected
-            Masks for the convolution
+        - data: STL_2D_FFT_Torch instance whose array attribute is a torch.Tensor of size [..., Njx, Njy]
+            Data to be convolved with the wavelet_set, at resolution Nj
+        - wavelet_set_MR: list (len J) of torch.Tensor of size [L, Njx, Njy]
+        - j: int
+            Scale index to select the wavelet set at resolution Nj
 
         Returns
         -------
         - STL_2D_FFT_Torch instance with:
-            - array: torch.Tensor (..., L, N0)
+            - array: torch.Tensor [..., L, Njx, Njy]
                 Convolution in Fourier space between data and wavelet_set at scale j
             - fourier_status: bool
                 True
         """
-        if mask is not None:
-            raise NotImplementedError("Mask is not yet allowed in STL_2D_FFT_Torch.")
-
         # Set data in Fourier space in place
         data = data.set_fourier_status(target_fourier_status=True, inplace=True)
+
+        wavelet_j = wavelet_set_MR[j]  # [L, Njx, Njy]
         return STL_2D_FFT_Torch(
-            array=data[..., None, :, :].array * wavelet_j, fourier_status=True
-        )
+            array=data[..., None, :, :].array * wavelet_j,
+            dg=data.dg,
+            N0=data.N0,
+            fourier_status=True,
+            pbc=data.pbc,
+            conv_history=data.conv_history + [j],
+        )  # [..., L, Njx, Njy]
 
     ###########################################################################
-    def apply(self, data, j=None, MR=None, mask_MR=None, target_fourier_status=None):
+    def _crop(self, array, border):
+        """
+        Crops an array by removing 'border' pixels from each side
+        along the last two dimensions.
+
+        Parameters
+        ----------
+        array : torch.Tensor
+            Input array to be cropped.
+        border : int
+            Number of pixels to remove from each side.
+        Returns
+        -------
+        torch.Tensor
+            Cropped array.
+        """
+
+        if array is None:
+            return None
+        elif border == 0:
+            return array
+        else:
+            # handling of borders larger than array can be adapted depending on desired behavior
+            if False:  # conservative handling of borders larger than array
+                assert array.shape[-2] > 2 * border
+                assert array.shape[-1] > 2 * border
+            elif False:  # flexible handling of borders larger than array
+                if min(array.shape[-2:]) <= 2 * border:
+                    if not getattr(
+                        self, "_border_warning_raised", False
+                    ):  # warns the user only once per wavelate operator
+                        print(
+                            "Warning! Data with shape {:} too small to be cropped with border {:}. Using border={:} instead.".format(
+                                array.detach().cpu().numpy().shape[-2:],
+                                border,
+                                (min(array.shape[-2:]) - 1) // 2,
+                            )
+                        )
+                        self._border_warning_raised = True
+                    border = (min(array.shape[-2:]) - 1) // 2
+            else:  # simple handling of borders larger than array: maskmean will return nan
+                pass
+            return array[..., border:-border, border:-border]
+
+    ###########################################################################
+    def mean(self, data, square=False, dim=(-2, -1), **kwargs):
+        """
+        Compute the mean on the last two dimensions (Nx, Ny).
+        Parameters
+        ----------
+        - data : STL_2D_FFT_Torch
+            Input data. Array is in real space.
+        - square : bool
+            If True, compute the mean of the square of the data.
+        - dim : tuple of int
+            Dimensions on which the mean is computed.
+        """
+        if data.pbc and data.fourier_status:
+            if square == False:
+                return data.array[..., 0, 0]
+            else:
+                # Parseval identity
+                return maskmean(x=data.array, square=square, dim=dim, mask=None)
+        else:
+
+            border = self._get_crop_border_size_method(data=data, wavelet_op=self)
+            cropped_array = self._crop(array=data.array, border=border)
+
+            return maskmean(x=cropped_array, square=square, dim=dim)
+
+    ###########################################################################
+    def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1), **kwargs):
+        """
+        Compute the covariance between data1 and data2 on the last two
+        dimensions (Nx, Ny).
+        """
+        if data2 is None:
+            data2 = data1
+            border = self._get_crop_border_size_method(data=data1, wavelet_op=self)
+        else:
+            assert (
+                data1.dg == data2.dg
+            ), "data1 and data2 must have the same resolution."
+
+            border = max(
+                self._get_crop_border_size_method(data=data1, wavelet_op=self),
+                self._get_crop_border_size_method(data=data2, wavelet_op=self),
+            )
+
+        if data1.pbc and data1.fourier_status and data2.pbc and data2.fourier_status:
+            # Parseval identity
+            return maskmean(
+                x=data1.array * torch.conj(data2.array),
+                square=False,
+                dim=dim,
+            )
+
+        data1 = data1.set_fourier_status(target_fourier_status=False, inplace=False)
+        data2 = data2.set_fourier_status(target_fourier_status=False, inplace=False)
+
+        x = data1.array
+        y = data2.array
+
+        if remove_mean:
+            raise NotImplementedError("remove_mean is not yet implemented.")
+            # x_c = x - x.mean(dim=dim, keepdim=True)
+            # y_c = y - y.mean(dim=dim, keepdim=True)
+        else:
+            x_c = x
+            y_c = y
+
+        cropped_array = self._crop(array=x_c * torch.conj(y_c), border=border)
+
+        cov = maskmean(x=cropped_array, square=False, dim=dim)
+
+        return cov
+
+    ###########################################################################
+    def apply(self, data, j=None, target_fourier_status=None, **kwargs):
         """
         Compute the Wavelet Transform (WT) of data.
         This method is DT dependent, and calls independent iterations with
@@ -702,7 +827,7 @@ class CrappyWavelateOperator2D_FFT_torch:
             without a MR framework, only if Single_Kernel==False.
             Input data should be a MR=False StlData instance at
             dg=0 resolution. No mask are a priori allowed in this case.
-        - fullJ_MR (j=None and MR=False): convolution at J*L scales and angles,
+        - fullJ_MR (j=None and MR=True): convolution at J*L scales and angles,
             within a MR framework, always possible.
             Input data should be a MR=True StlData instance at all
             resolution between dg=0 and dg_max [ lids_dg = range(dg_max) ]
@@ -718,16 +843,10 @@ class CrappyWavelateOperator2D_FFT_torch:
         ----------
         - data : STL_2D_FFT_Torch,
             Input data of same DT/N0, can be batched on several dimension.
-            -> MR=False dg=0 if fullJ
-            -> MR=True list_dg=range(dg_max+1) if fullJ_MR
-            -> MR=False dg=dg_j if single_j
-        - MR : bool
-            If convolution to be done in a MR framework.
+            -> dg=0 if fullJ
+            -> dg=dg_j if single_j
         - j : int
             Scale at which the convolution is done. Done at all scales if None.
-        - mask_MR : StlData with MR=True or None
-            Multi-resolution masks, requires list_dg = range(dg_max + 1)
-            mask is not allowed in fullJ mode
         - target_fourier_status : bool or None
             Desired Fourier status of output.
             If None, DT-dependent default is used.
@@ -735,10 +854,8 @@ class CrappyWavelateOperator2D_FFT_torch:
         Output
         ----------
         - WT : StlData:
-            -> MR==False (..., J, L, N0) if j is None and MR==False
-            -> MR==True list of (..., L, Nj) if j is None and MR==False
-            -> (..., L, Nj) if j == int
-            Wavelet convolutions at different scales and angles.
+            -> [..., J, L, N0] if j is None
+            -> [..., L, Nj] if j == int
 
         Questions and to do
         ----------
@@ -761,110 +878,50 @@ class CrappyWavelateOperator2D_FFT_torch:
         if self.DT != data.DT:
             raise Exception("Data and wavelet transform should have same DT")
         if self.N0 != data.N0:
-            raise Exception("Data and wavelet transform should have same N0")
+            raise Exception("Data and wavelet transform should have same N0 attributes")
 
-        # Check coherence of mask.
-        if mask_MR is not None:
-            if not self.mask_opt:
-                raise Exception(
-                    "Wavelet transform with masks not supported for this DT"
-                )
-            if not isinstance(mask_MR, STL_2D_FFT_Torch):
-                raise Exception("Mask should be a STL_2D_FFT_Torch instance")
-            if self.DT != mask_MR.DT:
-                raise Exception("Mask and wavelet transform should have same DT")
-            if self.N0 != mask_MR.N0:
-                raise Exception("Mask and wavelet transform should have same N0")
-            if mask_MR.list_dg != list(range(self.dg_max + 1)):
-                raise Exception(
-                    "Mask should be between MR between dg=0 and dg_max \n"
-                    "Use downsample_toMR_Mask method"
-                )
-            if mask_MR.fourier_status:
-                raise Exception("Mask should be in real space")
-
-        # Set MR default-value if None:
-        if MR is None:
-            MR = True if self.Single_Kernel else False
-
-        # Convolution at all scales at the same time
+        # fullJ convolution (j=None)
         if j is None:
 
-            # fullJ
-            if MR == False:
-                # Check valid Single_Kernel value
-                if self.Single_Kernel:
-                    raise Exception(
-                        "Convolutions at all scales with MR==False"
-                        "not supported with this DT"
-                    )
-                # Check that resolutions are compatible
-                if data.dg != 0:
-                    raise Exception("Data should be at dg=0 resolution")
-                # Create a new output STL_2D_FFT_Torch instance
-                # and compute the WT, all DT are not necessarily included here.
-                WT = self.__class__.wavelet_conv_full(
-                    data,
-                    self.wavelet_array,
-                    mask=None if mask_MR is None else mask_MR.array[0],
-                )
+            if data.dg != 0:
+                raise Exception("Data should be at dg=0 resolution")
 
-            # fullJ_MR
-            elif MR == True:
-                raise Exception("Not implemented yet")
-                # # Check that resolutions are compatible
+            # Convolution at all scales at full resolution N0
+            WT = self.__class__.wavelet_conv_full(data, self.wavelet_array)
 
-                # if data.list_dg != list(range(self.dg_max+1)):
-                #     raise Exception(
-                #         "Data should be between MR between dg=0 and dg_max \n"
-                #         "Use downsample_toMR method")
-                # # Create the ouptut stl.array instance for the WT
-                # WT = StlData._init_MR(self.DT, None, self.N0, self.j_to_dg)
-                # # Compute the WT, all DT are not necessarily included here.
-                # wavelet_conv_full_MR = {
-                #                 "DT1": DT1_wavelet_conv_full_MR,
-                #                 "DT2": DT2_wavelet_conv_full_MR
-                #                 }.get(self.DT)
-                # WT.array, WT.Fourier = wavelet_conv_full_MR(
-                #              data.array, self.wavelet_array_MR,
-                #              data.Fourier, self.j_to_dg,
-                #              None if mask_MR is None else mask_MR.array)
-
-        # Convolution at a given j scale in MR (single_j)
-        else:
-            if not isinstance(j, int):
-                raise Exception("j should be a single int")
+        # single_j convolution
+        elif isinstance(j, int):
             # Check that dg_j resolutions are compatible
             if data.dg != self.j_to_dg[j]:
                 raise Exception("Data should be at dg_j resolution")
-            # Create the autput stl_array instance for the Wavelet Transform
-            # and compute the WT at a given j
-            WT = self.__class__.wavelet_conv(
-                data,
-                self.wavelet_j(j),
-                mask=None if mask_MR is None else mask_MR.array[j],
-            )
+
+            # Convolution at scale j at resolution Nj
+            WT = self.__class__.wavelet_conv(data, self.wavelet_array_MR, j)
+        else:
+            raise Exception("j should be a single int")
 
         # Transform to correct Fourier status if necessary
         if target_fourier_status is not None:
-            WT.set_fourier_status(target_fourier_status)
+            WT.set_fourier_status(target_fourier_status, inplace=True)
 
         return WT
 
-    def downsample(
-        self, data, dg_out, mask_MR=None, inplace=True, target_fourier_status=True
-    ):
+    ###########################################################################
+    @staticmethod
+    def downsample(data, dg_out, inplace=True, target_fourier_status=True, **kwargs):
         """
-        Downsample the self.array to the dg_out resolution.
+        Downsample the data.array to the dg_out resolution.
 
-        Note: Masks are not supported in this data type.
 
         Parameters
         ----------
+        data : STL_2D_FFT_Torch instance
+            Data whose array attribute has to be downsampled.
         dg_out : int
             Desired downsampling factor of the data.
-        mask_MR : None
-            Placeholder for mask, not used in this function.
+        inplace : bool
+            If True, acts in-place and returns data.
+            If False, returns a new STL_2D_FFT_Torch instance.
         target_fourier_status : bool
             Desired Fourier status of the output data.
             As downsample is performed in Fourier space, default is True
@@ -875,10 +932,7 @@ class CrappyWavelateOperator2D_FFT_torch:
         STL_2D_FFT_Torch instance
             Downsampled data at the desired downgrading factor dg_out.
         """
-        if mask_MR is not None:
-            raise Exception("Masks are not supported in 2D_FFT_Torch downsample")
-
-        data = data if inplace else data.copy()
+        data = data.copy(empty=False) if not inplace else data
 
         if dg_out == data.dg:
             return data
@@ -917,10 +971,104 @@ class CrappyWavelateOperator2D_FFT_torch:
                 -1,
             ) * np.sqrt(dx * dy / dx_cur / dy_cur)
 
-            data.N0 = data.findN()
-
         data.dg = dg_out
         data = data.set_fourier_status(
             target_fourier_status=target_fourier_status, inplace=True
         )
         return data
+
+
+class PS_operator_2D_FFT_torch:
+    """
+    Class whose instances correspond to a power spectrum operator for 2D FFT data.
+    The operator is applied through apply method and is DT-dependent.
+    """
+
+    ###########################################################################
+    def __init__(self, size, n_bins, device=_DEFAULT_DEVICE, dtype=_DEFAULT_DTYPE):
+        self.size = size
+        self.n_bins = n_bins
+        self.device = _get_device(torch.device(device))
+        self.dtype = _get_dtype(dtype=dtype, device=self.device)
+
+        # create frequency grid
+        freqs = (
+            torch.fft.fftfreq(size, dtype=self.dtype) * size
+        )  # [-size/2, ..., size/2]
+        u, v = torch.meshgrid(freqs, freqs, indexing="ij")
+
+        # radial frequencies
+        rho = torch.sqrt(u**2 + v**2)
+        self.rho = torch.fft.fftshift(rho).to(self.device)
+
+        # frequency bins
+        self.max_freq = size // 2
+        self.min_freq = 1  # to be refined if needed
+        self.bin_edges = torch.linspace(self.min_freq, self.max_freq, n_bins + 1).to(
+            device
+        )
+        self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])
+
+        # create masks for each bin
+        self.masks = []
+        for i in range(n_bins):
+            mask = (self.rho >= self.bin_edges[i]) & (self.rho < self.bin_edges[i + 1])
+            self.masks.append(mask)
+
+    def apply(self, data):
+        """
+        Compute the power spectrum of the input data.
+
+        Parameters
+        ----------
+        - data : STL_2D_FFT_Torch
+            Input data whose array attribute power spectrum is to be computed.
+
+        Returns
+        -------
+        torch.Tensor
+            Power spectrum values for each frequency bin.
+        """
+        # consistency check
+        if not isinstance(data, STL_2D_FFT_Torch):
+            raise Exception("Data should be a STL_2D_FFT_Torch instance")
+        if self.size != min(data.N0):
+            raise Exception("Data size does not match operator size")
+
+        # Ensure data is in Fourier space
+        l_data = data.set_fourier_status(target_fourier_status=True, inplace=False)
+        l_data.array = torch.fft.fftshift(l_data.array, dim=(-2, -1))
+
+        power_spectrum = []
+        for mask in self.masks:
+            masked_data = l_data.array * mask
+            power = torch.mean(torch.abs(masked_data) ** 2)
+            power_spectrum.append(power.item())
+
+        return torch.tensor(power_spectrum, device=self.device, dtype=self.dtype)
+
+    ###########################################################################
+    def plot_PS(self, ps_tensor, label="Power Spectrum", color="b"):
+        """
+        Plot the power spectrum.
+        Parameters
+        ----------
+        ps_tensor: torch.Tensor
+            Power spectrum values to plot
+
+        Returns
+        -------
+        None
+        """
+        # Conversion en numpy pour matplotlib
+        freqs = self.bin_centers.cpu().numpy()
+
+        ps_values = ps_tensor.cpu().numpy()
+        plt.plot(freqs, ps_values, "-", marker="o", label=label, color=color)
+
+        plt.yscale("log")
+        plt.xlabel("frequency(cycles per image)")
+        plt.ylabel("Power Spectrum")
+        plt.title("Power Spectrum Radial")
+        plt.grid(True, which="both", ls="-", alpha=0.5)
+        plt.legend()

@@ -1,7 +1,17 @@
+import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
+# set parent directory to sys.path for imports (if executed directly)
+NOTEBOOK_DIR = Path.cwd().resolve()
+PARENT_DIR = NOTEBOOK_DIR.parents[0]
+if str(PARENT_DIR) not in sys.path:
+    sys.path.insert(0, str(PARENT_DIR))
+    print(f"Parent directory added to sys.path: ...\\{PARENT_DIR.name}")
+else:
+    print(f"Parent directory already in sys.path: ...\\{PARENT_DIR.name}")
 DATA_TEST_PATH = Path(__file__).parent.parent / "data" / "test"
 
 from STL_main.STL_2D_FFT_Torch import (
@@ -11,22 +21,37 @@ from STL_main.STL_2D_FFT_Torch import STL_2D_FFT_Torch as DataClass
 
 
 def test_DataClass_mean():
-    assert DataClass(array=np.array([[1, 2], [3, 4]], dtype=np.float64)).mean() == 2.5
+
+    # test DataClass instantiation over basic data
+    data = DataClass(array=np.load(DATA_TEST_PATH / "Turb_6.npy")[0])
+
+    # test wavelet operator building
+    wavelet_op = data.get_wavelet_op()
+
+    # test mean method
+    assert wavelet_op.mean(data).item() == torch.mean(data.array).item()
 
 
-def test_DataClass_findN():
-    assert DataClass(
-        array=np.array([[1, 2, 2], [3, 4, -0.5]], dtype=np.float64)
-    ).findN() == (2, 3)
+def test_DataClass_cov():
+
+    # test DataClass instanciation over basic data
+    data = DataClass(array=np.load(DATA_TEST_PATH / "Turb_6.npy")[0])
+    data.array -= torch.mean(data.array).item()
+
+    # test wavelet operator building
+    wavelet_op = data.get_wavelet_op()
+
+    # test mean method
+    assert torch.allclose(wavelet_op.cov(data), torch.var(data.array), rtol=1e-3)
 
 
-def test_WaveletOperator():
+def test_DataClass_downsample():
 
-    # test DataClass instanciation over data
+    # test DataClass instantiation over data
     data = DataClass(array=np.load(DATA_TEST_PATH / "Turb_6.npy"))
 
     # test wavelet operator building
-    wavelet_op = data.get_wavelet_op(J=2, L=4, WType="Crappy")
+    wavelet_op = data.get_wavelet_op(J=2, L=4)
 
     # test downsample
     dg_out = 3
@@ -38,3 +63,9 @@ def test_WaveletOperator():
         data_downsampled.array - data.array[..., :: 2**dg_out, :: 2**dg_out]
     )
     assert np.all(np.abs(diff) < threshold * np.abs(np.asarray(data_downsampled.array)))
+
+
+if __name__ == "__main__":
+    test_DataClass_mean()
+    test_DataClass_cov()
+    test_DataClass_downsample()
