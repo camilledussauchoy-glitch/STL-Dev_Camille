@@ -27,7 +27,7 @@ class STL_2D_FFT_Torch:
     """
 
     def __init__(
-        self, array, dg=None, N0=None, pbc=False, conv_history=[], fourier_status=False
+        self, array, dg=None, N0=None, pbc=None, conv_history=[], fourier_status=False
     ):
         """
         Initialize the STL_2D_FFT_torch class.
@@ -40,9 +40,11 @@ class STL_2D_FFT_Torch:
             Data resolution. If None, set to 0.
         N0 : tuple of int, optional
             Original size of the array. Required if dg is provided.
+        pbc : bool
+            Whether the data has periodic boundary conditions or not.
         conv_history : list of int, optional
-            History of convolutions applied to the data. e.g., [j1, j2] if data has been convolved
-            successively with wavelets at scales j1 and j2.
+            History of convolutions applied to the data, storing only the scale at which each convolution was applied.
+            e.g., [j1, j2] if data has been convolved successively with wavelets at scales j1 and j2.
         fourier_status : bool, optional
             Indicates if the data is in Fourier space (True) or real space (False).
         """
@@ -252,7 +254,9 @@ class STL_2D_FFT_Torch:
 
     ###########################################################################
     def get_wavelet_op(self, J=None, L=None, pbc=None, **kwargs):
-
+        raise NotImplementedError(
+            "Please fix in the code the pbc handling for FFT datatype and Wop"
+        )
         return CrappyWavelateOperator2D_FFT_torch(
             L, J, self.N0, self.DT, device=self.device, dtype=self.dtype, **kwargs
         )
@@ -654,7 +658,9 @@ class CrappyWavelateOperator2D_FFT_torch:
         # Set data in Fourier space in place
         data = data.set_fourier_status(target_fourier_status=True, inplace=True)
         return STL_2D_FFT_Torch(
-            array=data[..., None, None, :, :].array * wavelet_set, fourier_status=True
+            array=data[..., None, None, :, :].array * wavelet_set,
+            pbc=data.pbc,
+            fourier_status=True,
         )  # [..., J, L, Nx, Ny]
 
     @staticmethod
@@ -770,26 +776,18 @@ class CrappyWavelateOperator2D_FFT_torch:
             return maskmean(x=cropped_array, square=square, dim=dim)
 
     ###########################################################################
-    def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1), **kwargs):
+    def cov(self, data1, data2, remove_mean=False, dim=(-2, -1), **kwargs):
         """
         Compute the covariance between data1 and data2 on the last two
         dimensions (Nx, Ny).
         """
 
-        if data2 is None:
-            compute_variance = True
-            data2 = data1
-            border = self._get_crop_border_size_method(data=data1, wavelet_op=self)
-        else:
-            compute_variance = False
-            assert (
-                data1.dg == data2.dg
-            ), "data1 and data2 must have the same resolution."
+        assert data1.dg == data2.dg, "data1 and data2 must have the same resolution."
 
-            border = max(
-                self._get_crop_border_size_method(data=data1, wavelet_op=self),
-                self._get_crop_border_size_method(data=data2, wavelet_op=self),
-            )
+        border = max(
+            self._get_crop_border_size_method(data=data1, wavelet_op=self),
+            self._get_crop_border_size_method(data=data2, wavelet_op=self),
+        )
 
         if remove_mean:
             raise NotImplementedError("remove_mean is not yet implemented.")
@@ -797,11 +795,7 @@ class CrappyWavelateOperator2D_FFT_torch:
         if data1.pbc and data1.fourier_status and data2.pbc and data2.fourier_status:
             # Parseval identity
             return maskmean(
-                x=(
-                    data1.array * torch.conj(data2.array)
-                    if not compute_variance
-                    else data1.modulus().array ** 2
-                ),
+                x=data1.array * torch.conj(data2.array),
                 square=False,
                 dim=dim,
             )
@@ -810,11 +804,7 @@ class CrappyWavelateOperator2D_FFT_torch:
             data2 = data2.set_fourier_status(target_fourier_status=False, inplace=True)
 
             cropped_array = self._crop(
-                array=(
-                    data1.array * torch.conj(data2.array)
-                    if not compute_variance
-                    else data1.modulus().array ** 2
-                ),
+                array=data1.array * torch.conj(data2.array),
                 border=border,
             )
 

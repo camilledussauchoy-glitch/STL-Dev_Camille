@@ -80,11 +80,16 @@ class STL_2D_Kernel_Torch:
         2^dg is the downgrading level w.r.t. N0.
     - array : array (..., N)
           array(s) to store
+    - pbc : bool
+        Whether the data has periodic boundary conditions or not.
+    - conv_history : list of int, optional
+            History of convolutions applied to the data, storing only the scale at which each convolution was applied.
+            e.g., [j1, j2] if data has been convolved successively with wavelets at scales j1 and j2.
 
     """
 
     ###########################################################################
-    def __init__(self, array, dg=None, N0=None, conv_history=[]):
+    def __init__(self, array, dg=None, N0=None, pbc=None, conv_history=[]):
         """
         Constructor, see details above. Frontend version, which assume the
         array is at N0 resolution with dg=0.
@@ -110,6 +115,7 @@ class STL_2D_Kernel_Torch:
         self.device = self.array.device
         self.dtype = self.array.dtype
 
+        self.pbc = pbc
         self.conv_history = conv_history
 
     ###########################################################################
@@ -157,11 +163,9 @@ class STL_2D_Kernel_Torch:
         new = object.__new__(STL_2D_Kernel_Torch)
 
         # Copy metadata
-        new.N0 = self.N0
-        new.dg = self.dg
-        new.device = self.device
-        new.dtype = self.dtype
-        new.conv_history = self.conv_history
+        for k, v in self.__dict__.items():
+            if k != "array":
+                setattr(new, k, v)
 
         # Copy array
         if empty:
@@ -204,7 +208,7 @@ class STL_2D_Kernel_Torch:
         L=None,
         kernel_size=None,
         mask_full_res=None,
-        pbc=True,
+        pbc=None,
         *args,
         **kwargs,
     ):
@@ -217,6 +221,8 @@ class STL_2D_Kernel_Torch:
         if mask_full_res is None:
             if torch.any(self.array.isnan()):
                 mask_full_res = self.array.isnan()
+        if pbc is None:
+            pbc = self.pbc
         return WaveletOperator2Dkernel_torch(
             kernel_size,
             L,
@@ -365,7 +371,7 @@ class WaveletOperator2Dkernel_torch:
             raise ValueError("Invalid data conv_history.")
 
     @staticmethod
-    def _get_crop_border_size_zero(data, pbc, wavelet_op):
+    def _get_crop_border_size_zero(data, wavelet_op):
         return 0
 
     def __init__(
@@ -673,7 +679,7 @@ class WaveletOperator2Dkernel_torch:
                 pass
             return array[..., border:-border, border:-border]
 
-    def mean(self, data, square=False, dim=(-2, -1), pbc=True):
+    def mean(self, data, square=False, dim=(-2, -1)):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         """
@@ -687,39 +693,36 @@ class WaveletOperator2Dkernel_torch:
             mask=cropped_mask,
         )
 
-    def cov(self, data1, data2=None, remove_mean=False, dim=(-2, -1), pbc=True):
+    def cov(self, data1, data2, remove_mean=False, dim=(-2, -1)):
         """
         Compute the covariance between data1=self and data2 on the last two
         dimensions (Nx, Ny).
         """
-        if data2 is None:
-            data2 = data1
-            mask = self._find_mask(data1)
-            border = self._get_crop_border_size(data1, pbc)
-        else:
-            assert (
-                data1.dg == data2.dg
-            ), "data1 and data2 must have the same resolution."
+        assert data1.dg == data2.dg, "data1 and data2 must have the same resolution."
 
-            # finding the appropriate mask
-            if self.mask_full_res is None:
-                mask = None
+        # finding the appropriate mask
+        if self.mask_full_res is None:
+            mask = None
+        else:
+            if len(data1.conv_history) > len(
+                data2.conv_history
+            ):  # mask for |I*psi2|*psi3 contains the one for I*psi3
+                mask = self._find_mask(data1)
+            elif len(data1.conv_history) < len(
+                data2.conv_history
+            ):  # mask for |I*psi2|*psi3 contains the one for I*psi3
+                mask = self._find_mask(data2)
             else:
-                if len(data1.conv_history) > len(
-                    data2.conv_history
-                ):  # mask for |I*psi2|*psi3 contains the one for I*psi3
+                if data1.conv_history == data2.conv_history:  # same mask for both
                     mask = self._find_mask(data1)
-                elif len(data1.conv_history) < len(
-                    data2.conv_history
-                ):  # mask for |I*psi2|*psi3 contains the one for I*psi3
-                    mask = self._find_mask(data2)
-                else:  # mask for |I*psi2|*psi3 does not necessarily contains the one for |I*psi1|*psi3, and vice-versa
+                else:
+                    # mask for |I*psi2|*psi3 does not necessarily contains the one for |I*psi1|*psi3, and vice-versa
                     mask = self._find_mask(data1) + self._find_mask(data2)
 
-            border = max(
-                self._get_crop_border_size_method(data=data1, pbc=pbc, wavelet_op=self),
-                self._get_crop_border_size_method(data=data2, pbc=pbc, wavelet_op=self),
-            )
+        border = max(
+            self._get_crop_border_size_method(data=data1, wavelet_op=self),
+            self._get_crop_border_size_method(data=data2, wavelet_op=self),
+        )
 
         x = data1.array
         y = data2.array
@@ -744,7 +747,53 @@ class WaveletOperator2Dkernel_torch:
 
         return cov
 
-    def apply(self, data, j, pbc=True):
+    def _compute_and_store_cross_cov(
+        self,
+        data1,
+        data2,
+        output,
+        remove_mean=False,
+        dim=(-2, -1),
+        compute_cross_matrix=None,
+    ):
+        assert (
+            data1.array.shape[1] == data2.array.shape[1]
+        ), "data1 and data2 arrays must have the same number of channels."
+        assert (
+            data1.array.ndim == data2.array.ndim
+        ), "data1 and data2 arrays must have the same number of dimensions."
+
+        assert (
+            data1.array.shape[1] == output.shape[1]
+        ), "output and data must have the same number of channels."
+        assert (
+            output.shape[1] == output.shape[2]
+        ), "output must have shape (Nb, Nc, Nc, ...)."
+        Nc = output.shape[1]  # number of channels
+
+        compute_cross_matrix = (
+            torch.eye(Nc, dtype=torch.bool)
+            if compute_cross_matrix is None
+            else compute_cross_matrix
+        )
+
+        for c1 in range(Nc):
+            for c2 in range(Nc):
+                if compute_cross_matrix[c1, c2]:
+
+                    output[:, c1, c2, ...] = self.cov(
+                        data1=data1[:, c1, ...],
+                        data2=data2[:, c2, ...],
+                    )
+
+                    if c1 != c2:
+                        output[:, c2, c1, ...] = self.cov(
+                            data1=data2[:, c2, ...],
+                            data2=data1[:, c1, ...],
+                        )
+        return
+
+    def apply(self, data, j):
         """
         Apply the convolution kernel to data.array [..., Nx, Ny]
         and return cdata [..., L, Nx, Ny].
@@ -764,8 +813,8 @@ class WaveletOperator2Dkernel_torch:
             raise ValueError("j is not equal to dg, convolution not possible")
 
         assert (
-            pbc == self.pbc
-        ), "pbc flag must match the one used to build the wavelet operator."
+            data.pbc == self.pbc
+        ), "data pbc must match the one used to build the wavelet operator, for reweighting maps purpose."
 
         x = data.array  # [..., Nx, Ny]
 
@@ -775,11 +824,15 @@ class WaveletOperator2Dkernel_torch:
         weight = self._wav_kernel.squeeze(0)  # [L, K, K]
 
         convolved = self.__class__._semicomplex_conv2d_circular(
-            x, weight, padding_mode=self.__class__._get_padding_mode(pbc=pbc)
+            x, weight, padding_mode=self.__class__._get_padding_mode(pbc=data.pbc)
         )
 
         return STL_2D_Kernel_Torch(
-            convolved, dg=data.dg, N0=data.N0, conv_history=data.conv_history + [j]
+            convolved,
+            dg=data.dg,
+            N0=data.N0,
+            pbc=data.pbc,
+            conv_history=data.conv_history + [j],
         )
 
     @staticmethod
@@ -832,7 +885,7 @@ class WaveletOperator2Dkernel_torch:
         return y.reshape(*leading_dims, H2, W2)
 
     ###########################################################################
-    def downsample(self, data, dg_out, inplace=True, replace_nan_value=nan, pbc=True):
+    def downsample(self, data, dg_out, inplace=True, replace_nan_value=nan):
         """
         Downsample the data to the dg_out resolution.
         Downsampling is done in real space along the last two dimensions using (successive iterations of, if dg_out - dg > 1) torch.conv2d with stride=2.
@@ -848,8 +901,8 @@ class WaveletOperator2Dkernel_torch:
             )
 
         assert (
-            pbc == self.pbc
-        ), "pbc flag must match the one used to build the wavelet operator."
+            data.pbc == self.pbc
+        ), "data pbc must match the one used to build the wavelet operator, for reweighting maps purpose."
 
         data = data.copy(empty=False) if not inplace else data
         dg_inc = dg_out - data.dg
@@ -858,7 +911,7 @@ class WaveletOperator2Dkernel_torch:
             smooth_kernel = self._gaussian_kernel_5x5(
                 device=data.array.device, dtype=data.array.dtype
             )
-            padding_mode = self.__class__._get_padding_mode(pbc=pbc)
+            padding_mode = self.__class__._get_padding_mode(pbc=data.pbc)
 
             if self.mask_full_res is None:  # no mask
                 data.array = self._downsample_tensor(

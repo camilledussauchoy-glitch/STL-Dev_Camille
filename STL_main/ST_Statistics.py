@@ -171,7 +171,7 @@ class ST_Statistics:
         if self.angular_ft:
             raise Exception("Normalization can only be done before angular ft")
         if self.scale_ft:
-            raise Exception("Normalization can only be done before scate_ft")
+            raise Exception("Normalization can only be done before scale_ft")
 
         # Leave the function if no normalization is required
         if norm is None:
@@ -184,16 +184,25 @@ class ST_Statistics:
                 raise Exception("ST statistics are already normalized")
             # Perform normalization and store reference
             if self.SC == "ScatCov":
-                S2_ref = self.S2 * 1.0
-                self.S1 = self.S1 / bk.sqrt(S2_ref)
-                self.S2 = self.S2 / S2_ref
-                self.S3 = self.S3 / bk.sqrt(
-                    S2_ref[:, :, :, None, :, None] * S2_ref[:, :, None, :, None, :]
-                )
-                self.S4 = self.S4 / bk.sqrt(
-                    S2_ref[:, :, :, None, None, :, None, None]
-                    * S2_ref[:, :, None, :, None, None, :, None]
-                )
+                S2_ref = self.S2 * 1.0  # [Nb,Nc,Nc,...]
+                S2_ref_chan_diag = S2_ref.diagonal(dim1=1, dim2=2).movedim(
+                    -1, 1
+                )  # [Nb,Nc,...] retrieves S2_ref diagonal over channels
+                sqrt_S2_ref_chan_diag = bk.sqrt(S2_ref_chan_diag)  # [Nb,Nc,...]
+
+                self.S1 = self.S1 / sqrt_S2_ref_chan_diag  # [Nb,Nc,...]
+                self.S2 = self.S2 / (
+                    sqrt_S2_ref_chan_diag[:, :, None]
+                    * sqrt_S2_ref_chan_diag[:, None, :]
+                )  # [Nb,Nc,Nc,...]
+                self.S3 = self.S3 / (
+                    sqrt_S2_ref_chan_diag[:, :, None, :, None, :, None]
+                    * sqrt_S2_ref_chan_diag[:, None, :, None, :, None, :]
+                )  # [Nb,Nc,Nc,...]
+                self.S4 = self.S4 / (
+                    sqrt_S2_ref_chan_diag[:, :, None, :, None, None, :, None, None]
+                    * sqrt_S2_ref_chan_diag[:, None, :, None, :, None, None, :, None]
+                )  # [Nb,Nc,Nc,...]
                 self.S2_ref = S2_ref
 
             if self.compute_PS:
@@ -215,15 +224,24 @@ class ST_Statistics:
 
             # Perform normalization and store reference
             if self.SC == "ScatCov":
-                self.S1 = self.S1 / bk.sqrt(S2_ref)
-                self.S2 = self.S2 / S2_ref
-                self.S3 = self.S3 / bk.sqrt(
-                    S2_ref[:, :, :, None, :, None] * S2_ref[:, :, None, :, None, :]
-                )
-                self.S4 = self.S4 / bk.sqrt(
-                    S2_ref[:, :, :, None, None, :, None, None]
-                    * S2_ref[:, :, None, :, None, None, :, None]
-                )
+                S2_ref_chan_diag = S2_ref.diagonal(dim1=1, dim2=2).movedim(
+                    -1, 1
+                )  # [Nb,Nc,...] retrieves S2_ref diagonal over channels
+                sqrt_S2_ref_chan_diag = bk.sqrt(S2_ref_chan_diag)  # [Nb,Nc,...]
+
+                self.S1 = self.S1 / sqrt_S2_ref_chan_diag  # [Nb,Nc,...]
+                self.S2 = self.S2 / (
+                    sqrt_S2_ref_chan_diag[:, :, None]
+                    * sqrt_S2_ref_chan_diag[:, None, :]
+                )  # [Nb,Nc,Nc,...]
+                self.S3 = self.S3 / (
+                    sqrt_S2_ref_chan_diag[:, :, None, :, None, :, None]
+                    * sqrt_S2_ref_chan_diag[:, None, :, None, :, None, :]
+                )  # [Nb,Nc,Nc,...]
+                self.S4 = self.S4 / (
+                    sqrt_S2_ref_chan_diag[:, :, None, :, None, None, :, None, None]
+                    * sqrt_S2_ref_chan_diag[:, None, :, None, :, None, None, :, None]
+                )  # [Nb,Nc,Nc,...]
                 self.S2_ref = S2_ref
 
             if self.compute_PS:
@@ -263,17 +281,17 @@ class ST_Statistics:
             # self.S1 = bk.mean(self.S1.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
             # self.S1 = bk.mean(self.S2.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
             self.S1 = bk.mean(self.S1, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
-            self.S2 = bk.mean(self.S2, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            self.S2 = bk.mean(self.S2, -1)  # (Nb,Nc,Nc,J,L) -> (Nb,Nc,Nc,J)
 
             # S3 and S4
-            S3iso = bk.zeros((Nb, Nc, J, J, L))
-            S4iso = bk.zeros((Nb, Nc, J, J, J, L, L))
+            S3iso = bk.zeros((Nb, Nc, Nc, J, J, L))
+            S4iso = bk.zeros((Nb, Nc, Nc, J, J, J, L, L))
             for l1 in range(L):
                 for l2 in range(L):
-                    # (Nb,Nc,J,J,L,L) -> (Nb,Nc,J,J,L)
+                    # (Nb,Nc,Nc,J,J,L,L) -> (Nb,Nc,Nc,J,J,L)
                     S3iso[..., (l2 - l1) % L] += self.S3[..., l1, l2]
                     for l3 in range(L):
-                        # (Nb,Nc,J,J,J,L,L,L) -> (Nb,Nc,J,J,J,L,L)
+                        # (Nb,Nc,Nc,J,J,J,L,L,L) -> (Nb,Nc,Nc,J,J,J,L,L)
                         S4iso[..., (l2 - l1) % L, (l3 - l1) % L] += self.S4[
                             ..., l1, l2, l3
                         ]

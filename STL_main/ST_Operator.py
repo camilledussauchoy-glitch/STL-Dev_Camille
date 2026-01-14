@@ -106,7 +106,7 @@ class ST_Operator:
         jmin=None,
         jmax=None,
         dj=None,
-        pbc=True,
+        pbc=None,
         replace_nan_value=bk.nan,
         norm="S2",
         S2_ref=None,
@@ -131,6 +131,7 @@ class ST_Operator:
         self.dg = data.dg
 
         # Wavelet transform and related parameters
+        self.pbc = pbc if pbc is not None else data.pbc
         wavelet_op_kwargs = {}
         if downsample_nan_weight_threshold is not None:
             wavelet_op_kwargs["downsample_nan_weight_threshold"] = (
@@ -142,7 +143,7 @@ class ST_Operator:
             )
 
         self.wavelet_op = data.get_wavelet_op(
-            J=J, L=L, pbc=pbc, **wavelet_op_kwargs
+            J=J, L=L, pbc=self.pbc, **wavelet_op_kwargs
         )  # Wavelet_Operator(DT, N0, J, L, WType)
         self.J = self.wavelet_op.J
         self.L = self.wavelet_op.L
@@ -153,7 +154,6 @@ class ST_Operator:
         self.jmin = jmin
         self.jmax = jmax
         self.dj = dj
-        self.pbc = pbc
         self.replace_nan_value = replace_nan_value
 
         # Additional transform/compression related parameters
@@ -221,7 +221,6 @@ class ST_Operator:
         jmin=None,
         jmax=None,
         dj=None,
-        pbc=None,
         norm=None,
         S2_ref=None,
         iso=None,
@@ -231,6 +230,7 @@ class ST_Operator:
         mask_st=None,
         compute_PS=None,
         PS_ref=None,
+        compute_cross_matrix=None,
     ):
         """
         Compute the Scattering Transform (ST) of data, which are either stored
@@ -265,8 +265,6 @@ class ST_Operator:
             maximum scale for ST statistics computation
         - dj : int
             maximum scale difference for ST statistics computation
-        - pbc : bool
-            periodic boundary conditions
         - pass_mask : bool
             Pass mask to ST statistics object if True
 
@@ -289,6 +287,15 @@ class ST_Operator:
         # Power spectrum computation
         - compute_PS : bool
             whether to compute power spectrum coefficients in addition to ST statistics
+
+        # Cross statistics computation
+        - compute_cross_matrix : ndarray of bool (Default: None which is auto-statistics only)
+            Upper triangular matrix with shape (Nc,Nc), which determines pairs of channels for which to compute cross-statistics.
+            More precisely:
+                - computes S1(c1), S2(c1), S3(c1,c1) and S4(c1,c1) if and only if compute_cross_matrix[c1,c1] == True
+                - for c1 > c2, computes S3(c1,c2), S3(c2,c1), S4(c1,c2) and S4(c2,c1) if and only if compute_cross_matrix[c1,c2] == True
+                - for c1 > c2, compute_cross_matrix[c1,c2] is ignored and should not be specified
+            If None, it is replaced downstream by a boolean identity matrix, so that only auto-statistics are computed.
 
 
         Output
@@ -318,7 +325,6 @@ class ST_Operator:
         jmin = self.jmin if jmin is None else jmin
         jmax = self.jmax if jmax is None else jmax
         dj = self.dj if dj is None else dj
-        pbc = self.pbc if pbc is None else pbc
 
         # Local value for the additional transforms parameters
         norm = self.norm if norm is None else norm
@@ -355,7 +361,7 @@ class ST_Operator:
             jmin,
             jmax,
             dj,
-            pbc,
+            self.pbc,
             Nb,
             Nc,
             self.wavelet_op,
@@ -369,15 +375,33 @@ class ST_Operator:
             data_st.PS = PS_op.apply(data)
 
         if SC == "ScatCov":
-            data_st.S1 = bk.zeros((Nb, Nc, J, L))
-            data_st.S2 = bk.zeros((Nb, Nc, J, L))
+            data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
+            data_st.S2 = bk.zeros((Nb, Nc, Nc, J, L)) + bk.nan
             data_st.S3 = (
-                bk.zeros((Nb, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
-            )
-            data_st.S4 = (
-                bk.zeros((Nb, Nc, J, J, J, L, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
+                bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
                 + bk.nan
             )
+            data_st.S4 = (
+                bk.zeros(
+                    (Nb, Nc, Nc, J, J, J, L, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE
+                )
+                + bk.nan
+            )
+            channels_with_auto_stats = (
+                compute_cross_matrix.diagonal()
+                if compute_cross_matrix is not None
+                else ~bk.zeros(Nc, dtype=bool)
+            )
+            for channel in range(len(channels_with_auto_stats)):
+                if not channels_with_auto_stats[channel]:
+                    if not (
+                        compute_cross_matrix[channel, channel + 1 :].any()
+                        or compute_cross_matrix[:channel, channel].any()
+                    ):
+                        # If no auto-statistics are asked for this channel, we require it to appear in at least onecross-statistics
+                        raise Exception(
+                            f"Channel {channel} auto-statistics are not demanded and does not appear in any cross-statistics neither.\nPlease remove it or constrain it at least its auto-statistics or one of its cross-statistics."
+                        )
 
         ########################################
         # ST coefficients computation
@@ -399,7 +423,7 @@ class ST_Operator:
 
         for j3 in range(J):
             # Compute first convolution and modulus
-            data_l1 = self.wavelet_op.apply(l_data, j=j3, pbc=pbc)  # (Nb,Nc,L,N3)
+            data_l1 = self.wavelet_op.apply(l_data, j=j3)  # (Nb,Nc,L,N3)
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
 
             if False and self.wavelet_op.mask_full_res is not None:
@@ -412,21 +436,34 @@ class ST_Operator:
             ##############################################################################
             ########################## S1(j3) = Mean(|I*psi3|) ###########################
             ##############################################################################
-            data_st.S1[:, :, j3, :] = self.wavelet_op.mean(
-                data_l1m[j3], pbc=pbc
+            data_st.S1[:, channels_with_auto_stats, j3, :] = self.wavelet_op.mean(
+                data_l1m[j3][:, channels_with_auto_stats, :, :],
             )  # (Nb,Nc,L)
 
             ##############################################################################
             ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
             ##############################################################################
-            data_st.S2[:, :, j3, :] = self.wavelet_op.mean(
-                data_l1m[j3], square=True, pbc=pbc
-            )  # (Nb,Nc,L)
+            # auto S2 terms
+            data_st.S2[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
+                self.wavelet_op.mean(
+                    data_l1m[j3][:, channels_with_auto_stats, :, :, :],
+                    square=True,
+                )
+            )  # (Nb,Nc,Nc,L)
+            for c1 in range(Nc):
+                for c2 in range(c1 + 1, Nc):
+                    # cross S2 terms (sub diagonal only)
+                    if compute_cross_matrix[c1, c2]:
+                        data_st.S2[:, c1, c2, j3, :] = self.wavelet_op.cov(
+                            data_l1[:, c1, :, :, :],
+                            data_l1[:, c2, :, :, :],
+                        )  # (Nb,L)
 
             data_l1m_l2 = {}
             for j2 in range(j3 + 1):
                 data_l1m_l2_j2 = self.wavelet_op.apply(
-                    data_l1m[j2], j=j3, pbc=pbc
+                    data_l1m[j2],
+                    j=j3,
                 )  # (Nb,Nc,L2,L3,N3)
 
                 if False and self.wavelet_op.mask_full_res is not None:
@@ -440,11 +477,12 @@ class ST_Operator:
                 ##############################################################################
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
-                data_st.S3[:, :, j2, j3, :, :] = self.wavelet_op.cov(
+                self.wavelet_op._compute_and_store_cross_cov(
                     data_l1m_l2_j2,
                     data_l1[:, :, None],
-                    pbc=pbc,
-                )  # (Nb,Nc,L2,L3)
+                    output=data_st.S3[:, :, :, j2, j3, :, :],
+                    compute_cross_matrix=compute_cross_matrix,
+                )  # (Nb,Nc,Nc,L2,L3)
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
 
@@ -452,11 +490,12 @@ class ST_Operator:
                     ##############################################################################
                     ############## S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3) ##############
                     ##############################################################################
-                    data_st.S4[:, :, j1, j2, j3, :, :, :] = self.wavelet_op.cov(
+                    self.wavelet_op._compute_and_store_cross_cov(
                         data_l1m_l2[j1][:, :, :, None],
-                        data_l1m_l2[j2][:, :, None] if j1 != j2 else None,
-                        pbc=pbc,
-                    )  # (Nb,Nc,L1,L2,L3)
+                        data_l1m_l2[j2][:, :, None, :],
+                        output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
+                        compute_cross_matrix=compute_cross_matrix,
+                    )  # (Nb,Nc,Nc,L1,L2,L3)
 
             # Downsample at Nj3
             if j3 < J - 1:
@@ -466,7 +505,6 @@ class ST_Operator:
                     dg_out=j3 + 1,
                     inplace=True,
                     replace_nan_value=self.replace_nan_value,
-                    pbc=pbc,
                 )  # (Nb,Nc,j3+1,L,N3)
 
                 for j2 in range(j3 + 1):
@@ -475,7 +513,6 @@ class ST_Operator:
                         dg_out=j3 + 1,
                         inplace=True,
                         replace_nan_value=self.replace_nan_value,
-                        pbc=pbc,
                     )  # (Nb,Nc,j3+1,L,N3)
 
         """
