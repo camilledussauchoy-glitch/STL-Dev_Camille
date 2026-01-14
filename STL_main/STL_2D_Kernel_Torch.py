@@ -814,7 +814,7 @@ class WaveletOperator2Dkernel_torch:
 
         assert (
             data.pbc == self.pbc
-        ), "data pbc must match the one used to build the wavelet operator, for reweighting maps purpose."
+        ), "data pbc must match the one used to build the wavelet operator, for the reweighting maps purpose."
 
         x = data.array  # [..., Nx, Ny]
 
@@ -902,7 +902,7 @@ class WaveletOperator2Dkernel_torch:
 
         assert (
             data.pbc == self.pbc
-        ), "data pbc must match the one used to build the wavelet operator, for reweighting maps purpose."
+        ), "data pbc must match the one used to build the wavelet operator, for the reweighting maps purpose."
 
         data = data.copy(empty=False) if not inplace else data
         dg_inc = dg_out - data.dg

@@ -292,8 +292,8 @@ class ST_Operator:
         - compute_cross_matrix : ndarray of bool (Default: None which is auto-statistics only)
             Upper triangular matrix with shape (Nc,Nc), which determines pairs of channels for which to compute cross-statistics.
             More precisely:
-                - computes S1(c1), S2(c1), S3(c1,c1) and S4(c1,c1) if and only if compute_cross_matrix[c1,c1] == True
-                - for c1 > c2, computes S3(c1,c2), S3(c2,c1), S4(c1,c2) and S4(c2,c1) if and only if compute_cross_matrix[c1,c2] == True
+                - computes S1(c1), S2(c1,c1), S3(c1,c1) and S4(c1,c1) if and only if compute_cross_matrix[c1,c1] == True
+                - for c1 < c2, computes S2(c1,c2), S3(c1,c2), S3(c2,c1), S4(c1,c2) and S4(c2,c1) if and only if compute_cross_matrix[c1,c2] == True
                 - for c1 > c2, compute_cross_matrix[c1,c2] is ignored and should not be specified
             If None, it is replaced downstream by a boolean identity matrix, so that only auto-statistics are computed.
 
@@ -398,9 +398,9 @@ class ST_Operator:
                         compute_cross_matrix[channel, channel + 1 :].any()
                         or compute_cross_matrix[:channel, channel].any()
                     ):
-                        # If no auto-statistics are asked for this channel, we require it to appear in at least onecross-statistics
+                        # If no auto-statistics are asked for this channel, we require it to appear in at least one cross-statistics
                         raise Exception(
-                            f"Channel {channel} auto-statistics are not demanded and does not appear in any cross-statistics neither.\nPlease remove it or constrain it at least its auto-statistics or one of its cross-statistics."
+                            f"Channel {channel} auto-statistics are not demanded and does not appear in any cross-statistics neither.\nPlease remove it or constrain at least its auto-statistics or one of its cross-statistics."
                         )
 
         ########################################
@@ -443,14 +443,13 @@ class ST_Operator:
             ##############################################################################
             ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
             ##############################################################################
-            # auto S2 terms
-            data_st.S2[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
-                self.wavelet_op.mean(
-                    data_l1m[j3][:, channels_with_auto_stats, :, :, :],
-                    square=True,
-                )
-            )  # (Nb,Nc,Nc,L)
             for c1 in range(Nc):
+                # auto S2 terms
+                if compute_cross_matrix[c1, c1]:
+                    data_st.S2[:, c1, c1, j3, :] = self.wavelet_op.mean(
+                        data_l1m[j3][:, c1, :, :, :],
+                        square=True,
+                    )  # (Nb,Nc,Nc,L) ################################## that one can easily be vectorized but carefully
                 for c2 in range(c1 + 1, Nc):
                     # cross S2 terms (sub diagonal only)
                     if compute_cross_matrix[c1, c2]:
