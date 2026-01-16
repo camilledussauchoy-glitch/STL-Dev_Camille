@@ -57,20 +57,12 @@ class ST_Operator:
     # Scattering Transform
     - SC : str
         type of ST coefficients ("ScatCov", "WPH")
-    - jmin : int
-        minimum scale for ST statistics computation
-    - jmax : int
-        maximum scale for ST statistics computation
-    - dj : int
-        maximum scale difference for ST statistics computation
-    - pbc : bool
-        periodic boundary conditions
 
     # Additional transform/compression
     - norm : str
-        type of norm ("S2", "S2_ref")
-    - S2_ref : array
-        array of reference S2 coefficients
+        type of norm (“self”, “from_ref”)
+    - S2_ref_sqrt_chan_diag : array
+        array of reference S2 coefficients (square root of the diagonal over channels)
     - iso : bool
         keep only isotropic coefficients
     - angular_ft : bool
@@ -103,13 +95,9 @@ class ST_Operator:
         J=None,
         L=None,
         SC="ScatCov",
-        jmin=None,
-        jmax=None,
-        dj=None,
-        pbc=None,
         replace_nan_value=bk.nan,
-        norm="S2",
-        S2_ref=None,
+        norm="self",
+        S2_ref_sqrt_chan_diag=None,
         iso=False,
         angular_ft=False,
         scale_ft=False,
@@ -131,7 +119,6 @@ class ST_Operator:
         self.dg = data.dg
 
         # Wavelet transform and related parameters
-        self.pbc = pbc if pbc is not None else data.pbc
         wavelet_op_kwargs = {}
         if downsample_nan_weight_threshold is not None:
             wavelet_op_kwargs["downsample_nan_weight_threshold"] = (
@@ -143,7 +130,7 @@ class ST_Operator:
             )
 
         self.wavelet_op = data.get_wavelet_op(
-            J=J, L=L, pbc=self.pbc, **wavelet_op_kwargs
+            J=J, L=L, **wavelet_op_kwargs
         )  # Wavelet_Operator(DT, N0, J, L, WType)
         self.J = self.wavelet_op.J
         self.L = self.wavelet_op.L
@@ -151,14 +138,11 @@ class ST_Operator:
 
         # Scattering transform related parameters
         self.SC = SC
-        self.jmin = jmin
-        self.jmax = jmax
-        self.dj = dj
         self.replace_nan_value = replace_nan_value
 
         # Additional transform/compression related parameters
         self.norm = norm
-        self.S2_ref = S2_ref
+        self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
         self.iso = iso
         self.angular_ft = angular_ft
         self.scale_ft = scale_ft
@@ -200,12 +184,8 @@ class ST_Operator:
             L=st_stat.L,
             WType=st_stat.WType,
             SC=st_stat.SC,
-            jmin=st_stat.jmin,
-            jmax=st_stat.jmax,
-            dj=st_stat.dj,
-            pbc=st_stat.pbc,
             norm=st_stat.norm,
-            S2_ref=st_stat.S2_ref,
+            S2_ref_sqrt_chan_diag=st_stat.S2_ref_sqrt_chan_diag,
             iso=st_stat.iso,
             angular_ft=st_stat.angular_ft,
             scale_ft=st_stat.scale_ft,
@@ -218,11 +198,8 @@ class ST_Operator:
         self,
         data,
         SC=None,
-        jmin=None,
-        jmax=None,
-        dj=None,
         norm=None,
-        S2_ref=None,
+        S2_ref_sqrt_chan_diag=None,
         iso=None,
         angular_ft=None,
         scale_ft=None,
@@ -259,20 +236,14 @@ class ST_Operator:
         # Scattering Transform
         - SC : str
             type of ST coefficients ("ScatCov", "WPH")
-        - jmin : int
-            minimum scale for ST statistics computation
-        - jmax : int
-            maximum scale for ST statistics computation
-        - dj : int
-            maximum scale difference for ST statistics computation
         - pass_mask : bool
             Pass mask to ST statistics object if True
 
         # Additional transform/compression
         - norm : str
-            type of norm ("S2", "S2_ref")
-        - S2_ref : array
-            array of reference S2 coefficients
+            type of norm ("self", "from_ref")
+        - S2_ref_sqrt_chan_diag : array
+            array of reference S2 coefficients (square root of the diagonal over channels)
         - iso : bool
             keep only isotropic coefficients
         - angular_ft : bool
@@ -322,13 +293,14 @@ class ST_Operator:
 
         # Local value for the scattering transform parameters
         SC = self.SC if SC is None else SC
-        jmin = self.jmin if jmin is None else jmin
-        jmax = self.jmax if jmax is None else jmax
-        dj = self.dj if dj is None else dj
 
         # Local value for the additional transforms parameters
         norm = self.norm if norm is None else norm
-        S2_ref = self.S2_ref if S2_ref is None else S2_ref
+        S2_ref_sqrt_chan_diag = (
+            self.S2_ref_sqrt_chan_diag
+            if S2_ref_sqrt_chan_diag is None
+            else S2_ref_sqrt_chan_diag
+        )
         iso = self.iso if iso is None else iso
         angular_ft = self.angular_ft if angular_ft is None else angular_ft
         scale_ft = self.scale_ft if scale_ft is None else scale_ft
@@ -358,10 +330,6 @@ class ST_Operator:
             L,
             WType,
             SC,
-            jmin,
-            jmax,
-            dj,
-            self.pbc,
             Nb,
             Nc,
             self.wavelet_op,
@@ -563,25 +531,27 @@ class ST_Operator:
         if norm is None:
             pass
         elif norm == "store_ref":
-            if SC == "ScatCov" and self.S2_ref is not None:
-                print("Replacing existing S2_ref in ST_Op")
+            if SC == "ScatCov" and self.S2_ref_sqrt_chan_diag is not None:
+                print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
             if compute_PS and self.PS_ref is not None:
                 print("Replacing existing PS_ref in ST_Op")
             data_st.to_norm(norm="self")
             if SC == "ScatCov":
-                self.S2_ref = data_st.S2_ref
+                self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
                 self.PS_ref = data_st.PS_ref
 
         elif norm == "load_ref":
-            if SC == "ScatCov" and S2_ref is None:
-                raise Exception("S2_ref should be stored in the ST_Operator")
+            if SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
+                raise Exception(
+                    "S2_ref_sqrt_chan_diag should be stored in the ST_Operator"
+                )
             if compute_PS and PS_ref is None:
                 raise Exception("PS_ref should be stored in the ST_Operator")
 
             kwargs = {}
             if SC == "ScatCov":
-                kwargs["S2_ref"] = S2_ref
+                kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
             if compute_PS:
                 kwargs["PS_ref"] = PS_ref
 

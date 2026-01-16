@@ -44,14 +44,6 @@ class ST_Statistics:
     # Scattering Transform
     - SC : str
         type of ST coefficients ("ScatCov", "WPH")
-    - jmin : int
-        minimum scale for ST statistics computation
-    - jmax : int
-        maximum scale for ST statistics computation
-    - dj : int
-        maximum scale difference for ST statistics computation
-    - pbc : bool
-        periodic boundary conditions
 
     # Data array parameters
     - Nb : int
@@ -61,13 +53,13 @@ class ST_Statistics:
 
     Attributes
     ----------
-    - parent parameters (DT,N0,J,L,WType,SC,jmin,jmax,dj,pbc,Nb,Nc)
+    - parent parameters (DT,N0,J,L,WType,SC,Nb,Nc)
 
     # Additional transform/compression
     - norm : str
-        type of norm ("S2", "S2_ref")
-    - S2_ref : array
-        array of reference S2 coefficients
+        type of norm (“self”, “from_ref”)
+    - S2_ref_sqrt_chan_diag : array
+        array of reference S2 coefficients (normalized by sqrt of diagonal over channels)
     - iso : bool
         keep only isotropic coefficients
     - angular_ft : bool
@@ -93,14 +85,10 @@ class ST_Statistics:
         self,
         DT,
         N0,
-        J,
-        L,
-        WType,
+        J,  ######################################## not used?
+        L,  ######################################## not used?
+        WType,  ######################################## not used?
         SC,
-        jmin,
-        jmax,
-        dj,
-        pbc,
         Nb,
         Nc,
         wavelet_op,
@@ -125,10 +113,6 @@ class ST_Statistics:
 
         # Scattering transform related parameters
         self.SC = SC
-        self.jmin = jmin
-        self.jmax = jmax
-        self.dj = dj
-        self.pbc = pbc
 
         # Data related parameters
         self.Nb = Nb
@@ -138,7 +122,7 @@ class ST_Statistics:
         # False/None for the initialization, their value are modified if these
         # methods are called by the scattering operator, or independently.
         self.norm = False
-        self.S2_ref = None
+        self.S2_ref_sqrt_chan_diag = None
         self.iso = False
         self.angular_ft = False
         self.scale_ft = False
@@ -148,17 +132,48 @@ class ST_Statistics:
         # Power spectrum computation
         self.compute_PS = compute_PS
 
+    @staticmethod
+    def _get_sqrt_chan_diag(S2_ref):
+        """
+        Prepare S2_ref that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
+        """
+        S2_ref_chan_diag = S2_ref.diagonal(dim1=1, dim2=2).movedim(
+            -1, 1
+        )  # [Nb,Nc,J,L] retrieves S2_ref diagonal over channels
+        S2_ref_sqrt_chan_diag = bk.sqrt(S2_ref_chan_diag)  # [Nb,Nc,J,L]
+        return S2_ref_sqrt_chan_diag
+
+    def _normalize_scatcov(self):
+        """
+        Normalize the ScatCov statistics S1,S2,S3,S4
+        using self.S2_ref_sqrt_chan_diag
+        """
+
+        self.S1 = self.S1 / self.S2_ref_sqrt_chan_diag  # [Nb,Nc,J1,L1]
+        self.S2 = self.S2 / (
+            self.S2_ref_sqrt_chan_diag[:, :, None]
+            * self.S2_ref_sqrt_chan_diag[:, None, :]
+        )  # [Nb,Nc,Nc,J1,L1]
+        self.S3 = self.S3 / (
+            self.S2_ref_sqrt_chan_diag[:, :, None, :, None, :, None]
+            * self.S2_ref_sqrt_chan_diag[:, None, :, None, :, None, :]
+        )  # [Nb,Nc,Nc,J1,J2,L1,L2]
+        self.S4 = self.S4 / (
+            self.S2_ref_sqrt_chan_diag[:, :, None, :, None, None, :, None, None]
+            * self.S2_ref_sqrt_chan_diag[:, None, :, None, :, None, None, :, None]
+        )  # [Nb,Nc,Nc,J1,J2,J3,L1,L2,L3]
+
     ########################################
-    def to_norm(self, norm=None, S2_ref=None, PS_ref=None):
+    def to_norm(self, norm=None, S2_ref_sqrt_chan_diag=None, PS_ref=None):
         """
         Normalize the ST statistics.
         Parameters
         ----------
         - norm : str
             type of norm (“self”, “from_ref”)
-        - S2_ref : array
+        - S2_ref_sqrt_chan_diag : array
             if self.SC = "ScatCov"
-            array of reference S2 coefficients if "from_ref"
+            array of reference S2 coefficients if "from_ref" (normalized by sqrt of diagonal over channels)
         - PS_ref : array
             if self.PS = True
             array of reference Power Spectrum coefficients if "from_ref"
@@ -184,32 +199,18 @@ class ST_Statistics:
                 raise Exception("ST statistics are already normalized")
             # Perform normalization and store reference
             if self.SC == "ScatCov":
-                S2_ref = self.S2 * 1.0  # [Nb,Nc,Nc,...]
-                S2_ref_chan_diag = S2_ref.diagonal(dim1=1, dim2=2).movedim(
-                    -1, 1
-                )  # [Nb,Nc,...] retrieves S2_ref diagonal over channels
-                sqrt_S2_ref_chan_diag = bk.sqrt(S2_ref_chan_diag)  # [Nb,Nc,...]
-
-                self.S1 = self.S1 / sqrt_S2_ref_chan_diag  # [Nb,Nc,...]
-                self.S2 = self.S2 / (
-                    sqrt_S2_ref_chan_diag[:, :, None]
-                    * sqrt_S2_ref_chan_diag[:, None, :]
-                )  # [Nb,Nc,Nc,...]
-                self.S3 = self.S3 / (
-                    sqrt_S2_ref_chan_diag[:, :, None, :, None, :, None]
-                    * sqrt_S2_ref_chan_diag[:, None, :, None, :, None, :]
-                )  # [Nb,Nc,Nc,...]
-                self.S4 = self.S4 / (
-                    sqrt_S2_ref_chan_diag[:, :, None, :, None, None, :, None, None]
-                    * sqrt_S2_ref_chan_diag[:, None, :, None, :, None, None, :, None]
-                )  # [Nb,Nc,Nc,...]
-                self.S2_ref = S2_ref
+                if self.S2_ref_sqrt_chan_diag is None:
+                    # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
+                    # and store as reference
+                    self.S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
+                self._normalize_scatcov()
 
             if self.compute_PS:
                 PS_ref = self.PS * 1.0
                 self.PS = self.PS / PS_ref
                 self.PS_ref = PS_ref
 
+            # Store normalization parameters
             self.norm = True
 
         # Load_ref normalization
@@ -217,32 +218,16 @@ class ST_Statistics:
             # Verifications
             if self.norm:
                 raise Exception("ST statistics are already normalized")
-            if self.SC == "ScatCov" and S2_ref is None:
-                raise Exception("S2_ref should be given")
+            if self.SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
+                raise Exception("S2_ref_sqrt_chan_diag should be given")
             if self.compute_PS and PS_ref is None:
                 raise Exception("PS_ref should be given")
 
             # Perform normalization and store reference
             if self.SC == "ScatCov":
-                S2_ref_chan_diag = S2_ref.diagonal(dim1=1, dim2=2).movedim(
-                    -1, 1
-                )  # [Nb,Nc,...] retrieves S2_ref diagonal over channels
-                sqrt_S2_ref_chan_diag = bk.sqrt(S2_ref_chan_diag)  # [Nb,Nc,...]
-
-                self.S1 = self.S1 / sqrt_S2_ref_chan_diag  # [Nb,Nc,...]
-                self.S2 = self.S2 / (
-                    sqrt_S2_ref_chan_diag[:, :, None]
-                    * sqrt_S2_ref_chan_diag[:, None, :]
-                )  # [Nb,Nc,Nc,...]
-                self.S3 = self.S3 / (
-                    sqrt_S2_ref_chan_diag[:, :, None, :, None, :, None]
-                    * sqrt_S2_ref_chan_diag[:, None, :, None, :, None, :]
-                )  # [Nb,Nc,Nc,...]
-                self.S4 = self.S4 / (
-                    sqrt_S2_ref_chan_diag[:, :, None, :, None, None, :, None, None]
-                    * sqrt_S2_ref_chan_diag[:, None, :, None, :, None, None, :, None]
-                )  # [Nb,Nc,Nc,...]
-                self.S2_ref = S2_ref
+                # store as reference
+                self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
+                self._normalize_scatcov()
 
             if self.compute_PS:
                 self.PS = self.PS / PS_ref
@@ -258,7 +243,7 @@ class ST_Statistics:
         """
         Isotropize the set of ST statistics
 
-        Note: S2_ref is not isotropized since it is used before this step.
+        Note: S2_ref_sqrt_chan_diag is not isotropized since it is used before this step.
         Note: if self.PS = True, PS coefficients are already isotropized in PS_operator.
 
         EA: could probably be better vectorized, to be done.

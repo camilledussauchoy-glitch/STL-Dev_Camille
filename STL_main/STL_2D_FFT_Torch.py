@@ -257,7 +257,7 @@ class STL_2D_FFT_Torch:
         raise NotImplementedError(
             "Please fix in the code the pbc handling for FFT datatype and Wop"
         )
-        return CrappyWavelateOperator2D_FFT_torch(
+        return WavelateOperator2D_FFT_torch(
             L, J, self.N0, self.DT, device=self.device, dtype=self.dtype, **kwargs
         )
 
@@ -299,7 +299,7 @@ class STL_2D_FFT_Torch:
         )
 
 
-class CrappyWavelateOperator2D_FFT_torch:
+class WavelateOperator2D_FFT_torch:
     """
     Class whose instances correspond to a wavelet transform operator.
     The wavelet set and the operator is built during the initilization.
