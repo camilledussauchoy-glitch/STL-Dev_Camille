@@ -14,10 +14,8 @@ else:
     print(f"Parent directory already in sys.path: ...\\{PARENT_DIR.name}")
 DATA_TEST_PATH = Path(__file__).parent.parent / "data" / "test"
 
-from STL_main.STL_2D_FFT_Torch import (
-    CrappyWavelateOperator2D_FFT_torch as WaveletOperator,
-)
 from STL_main.STL_2D_FFT_Torch import STL_2D_FFT_Torch as DataClass
+from STL_main.STL_2D_FFT_Torch import WavelateOperator2D_FFT_torch as WaveletOperator
 
 
 def test_DataClass_mean():
