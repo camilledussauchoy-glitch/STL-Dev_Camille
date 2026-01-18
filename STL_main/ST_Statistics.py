@@ -84,7 +84,7 @@ class ST_Statistics:
     def __init__(
         self,
         DT,
-        N0,
+        N0,  ######################################## not used?
         J,  ######################################## not used?
         L,  ######################################## not used?
         WType,  ######################################## not used?
@@ -100,7 +100,7 @@ class ST_Statistics:
 
         # Main parameters
         self.DT = DT
-        self.N0 = N0
+        self.N0 = N0  ######################################## not used?
 
         # Wavelet operator
         self.wavelet_op = wavelet_op

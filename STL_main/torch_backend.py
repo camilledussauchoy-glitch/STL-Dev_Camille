@@ -166,6 +166,36 @@ def zeros(shape, device=None, dtype=None):
     return torch.zeros(shape, dtype=fix_dtype, device=device)
 
 
+def ones(shape, device=None, dtype=None):
+    """
+    Return a tensor of ones on CPU or GPU depending on `device`.
+
+    Parameters
+    ----------
+    shape : tuple or list
+    device : None, str, or torch.device
+    dtype : torch.dtype
+    """
+    device = _get_device(device)
+    fix_dtype = _get_dtype(dtype=dtype, device=device)
+    return torch.ones(shape, dtype=fix_dtype, device=device)
+
+
+def eye(n, device=None, dtype=None):
+    """
+    Return a tensor of ones on CPU or GPU depending on `device`.
+
+    Parameters
+    ----------
+    shape : tuple or list
+    device : None, str, or torch.device
+    dtype : torch.dtype
+    """
+    device = _get_device(device)
+    fix_dtype = _get_dtype(dtype=dtype, device=device)
+    return torch.eye(n, dtype=fix_dtype, device=device)
+
+
 def maskmean(x, square=False, dim=(-2, -1), mask=None):
     """
     Compute the mean of x along given dims, optionally masked.

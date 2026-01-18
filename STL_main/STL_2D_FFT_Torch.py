@@ -253,49 +253,27 @@ class STL_2D_FFT_Torch:
         return data
 
     ###########################################################################
-    def get_wavelet_op(self, J=None, L=None, pbc=None, **kwargs):
-        raise NotImplementedError(
-            "Please fix in the code the pbc handling for FFT datatype and Wop"
-        )
+    def get_wavelet_op(self, *args, **kwargs):
+
         return WavelateOperator2D_FFT_torch(
-            L, J, self.N0, self.DT, device=self.device, dtype=self.dtype, **kwargs
-        )
-
-    ###############################################################################
-    def get_ST_op(
-        self,
-        J=None,
-        L=None,
-        jmin=None,
-        jmax=None,
-        dj=None,
-        get_crop_border_size_method=None,
-    ):
-
-        return ST_Operator(
-            self,
-            J=J,
-            L=L,
-            jmin=jmin,
-            jmax=jmax,
-            dj=dj,
-            pbc=self.pbc,
-            get_crop_border_size_method=get_crop_border_size_method,
-        )
-
-    ###############################################################################
-    def get_PS_op(self, n_bins=None):
-
-        size = min(self.N0)
-
-        if n_bins is None:
-            n_bins = 16
-
-        return PS_operator_2D_FFT_torch(
-            size=size,
-            n_bins=n_bins,
+            N0=self.N0,
+            DT=self.DT,
             device=self.device,
             dtype=self.dtype,
+            *args,
+            **kwargs
+        )
+
+    ###############################################################################
+    def get_ST_op(self, *args, **kwargs):
+
+        return ST_Operator(data_example=self, *args, **kwargs)
+
+    ###############################################################################
+    def get_PS_op(self, *args, **kwargs):
+
+        return PS_operator_2D_FFT_torch(
+            size=min(self.N0), device=self.device, dtype=self.dtype, *args, **kwargs
         )
 
 
@@ -546,9 +524,9 @@ class WavelateOperator2D_FFT_torch:
 
     def __init__(
         self,
-        L,
-        J,
         N0,
+        J=None,
+        L=None,
         DT="Planar2D_FFT_torch",
         device=_DEFAULT_DEVICE,
         dtype=_DEFAULT_DTYPE,
@@ -577,13 +555,9 @@ class WavelateOperator2D_FFT_torch:
         self.WType = "Crappy"
 
         # Main parameters
-        self.L = L if L is not None else 4
-        self.J = (
-            J
-            if J is not None
-            else np.min([int(np.log2(N0[0])), int(np.log2(N0[1]))]) - 2
-        )
         self.N0 = N0
+        self.J = J if J is not None else int(np.log2(min(N0))) - 2
+        self.L = L if L is not None else 4
         self.DT = DT
         self.device = _get_device(torch.device(device))
         self.dtype = _get_dtype(dtype=dtype, device=self.device)
@@ -592,7 +566,7 @@ class WavelateOperator2D_FFT_torch:
         self.wavelet_array_MR = None
         self.dg_max = None
         self.j_to_dg = None
-        self.build()  # Build all the wavelets-related attributes.
+        self._build()  # Build all the wavelets-related attributes.
 
         if get_crop_border_size_method is not None:
             self._get_crop_border_size_method = get_crop_border_size_method
@@ -601,8 +575,14 @@ class WavelateOperator2D_FFT_torch:
                 self.__class__._get_crop_border_size_fully_flexible
             )
 
+        # NaNs handling
+        self.mask_full_res = None  # Used for NaNs handling in other data types. Must be None for this one which does not handles NaNs.
+        assert (
+            self.mask_full_res is None
+        ), "mask_full_res must be set to None for this DataType that does not handle NaNs."
+
     ###########################################################################
-    def build(self):
+    def _build(self):
         """
         Build attributes related to the wavelet set and in multi-resolution framework:
             - wavelet_array
@@ -611,8 +591,8 @@ class WavelateOperator2D_FFT_torch:
             - j_to_dg
         """
         # Create the full resolution Wavelet set (in fourier space plus fftshifted)
-        self.wavelet_array = self.__class__.gaussian_bank(
-            self.J, self.L, self.N0
+        self.wavelet_array = self.__class__.gaussian_bank(self.J, self.L, self.N0).to(
+            device=self.device, dtype=self.dtype
         )  # [J, L, N0x, N0y]
 
         # Find dg_max (with a min size of 16 = 2 * 8)
@@ -813,6 +793,50 @@ class WavelateOperator2D_FFT_torch:
         else:
             raise NotImplementedError("Unusual case, to be investigated.")
 
+    def _compute_and_store_cross_cov(
+        self,
+        data1,
+        data2,
+        output,
+        compute_cross_matrix,
+        remove_mean=False,
+        dim=(-2, -1),
+    ):
+        assert (
+            data1.array.shape[1] == data2.array.shape[1]
+        ), "data1 and data2 arrays must have the same number of channels."
+        assert (
+            data1.array.ndim == data2.array.ndim
+        ), "data1 and data2 arrays must have the same number of dimensions."
+
+        assert (
+            data1.array.shape[1] == output.shape[1]
+        ), "output and data must have the same number of channels."
+        assert (
+            output.shape[1] == output.shape[2]
+        ), "output must have shape (Nb, Nc, Nc, ...)."
+        Nc = output.shape[1]  # number of channels
+
+        for c1 in range(Nc):
+            for c2 in range(Nc):
+                if compute_cross_matrix[c1, c2]:
+
+                    output[:, c1, c2, ...] = self.cov(
+                        data1=data1[:, c1, ...],
+                        data2=data2[:, c2, ...],
+                        remove_mean=remove_mean,
+                        dim=dim,
+                    )
+
+                    if c1 != c2:
+                        output[:, c2, c1, ...] = self.cov(
+                            data1=data2[:, c2, ...],
+                            data2=data1[:, c1, ...],
+                            remove_mean=remove_mean,
+                            dim=dim,
+                        )
+        return
+
     ###########################################################################
     def apply(self, data, j=None, target_fourier_status=None, **kwargs):
         """
@@ -990,7 +1014,7 @@ class PS_operator_2D_FFT_torch:
     """
 
     ###########################################################################
-    def __init__(self, size, n_bins, device=_DEFAULT_DEVICE, dtype=_DEFAULT_DTYPE):
+    def __init__(self, size, n_bins=16, device=_DEFAULT_DEVICE, dtype=_DEFAULT_DTYPE):
         self.size = size
         self.n_bins = n_bins
         self.device = _get_device(torch.device(device))

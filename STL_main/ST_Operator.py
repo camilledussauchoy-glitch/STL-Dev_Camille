@@ -7,7 +7,7 @@ Tentative proposal by EA
 
 import numpy as np
 
-import STL_main.torch_backend as bk  # from_numpy, zeros, dim, shape, nan
+import STL_main.torch_backend as bk  # from_numpy, zeros, ones, dim, shape, nan, eye
 from STL_main.ST_Statistics import ST_Statistics
 
 ###############################################################################
@@ -91,7 +91,7 @@ class ST_Operator:
     ########################################
     def __init__(
         self,
-        data,
+        data_example,
         J=None,
         L=None,
         SC="ScatCov",
@@ -114,9 +114,7 @@ class ST_Operator:
         Constructor, see details above.
         """
         # Main parameters
-        self.DT = data.DT
-        self.N0 = data.N0
-        self.dg = data.dg
+        self.DT = data_example.DT
 
         # Wavelet transform and related parameters
         wavelet_op_kwargs = {}
@@ -129,7 +127,7 @@ class ST_Operator:
                 get_crop_border_size_method
             )
 
-        self.wavelet_op = data.get_wavelet_op(
+        self.wavelet_op = data_example.get_wavelet_op(
             J=J, L=L, **wavelet_op_kwargs
         )  # Wavelet_Operator(DT, N0, J, L, WType)
         self.J = self.wavelet_op.J
@@ -155,7 +153,7 @@ class ST_Operator:
 
     ########################################
     @classmethod
-    def from_ST_Statistics(self, st_stat, N0_new=None):
+    def from_ST_Statistics(self, st_stat):
         """
         Alternative constructor, which generates the ST operator used to
         compute a given set of ST statistics.
@@ -164,8 +162,6 @@ class ST_Operator:
         ----------
         - st_stat : ST_Statistics
             st_stat instance whose parameters have to be reproduced
-        - N0_new : tuple
-            new initial size of array (can be multiple dimensions)
 
         Remark and to do
         ----------
@@ -174,12 +170,9 @@ class ST_Operator:
         for me how to deal with this point.
 
         """
-
-        N0 = st_stat.N0 if N0_new is None else N0_new
-
+        raise NotImplementedError
         return ST_Operator(
             st_stat.DT,
-            N0,
             J=st_stat.J,
             L=st_stat.L,
             WType=st_stat.WType,
@@ -266,7 +259,7 @@ class ST_Operator:
                 - computes S1(c1), S2(c1,c1), S3(c1,c1) and S4(c1,c1) if and only if compute_cross_matrix[c1,c1] == True
                 - for c1 < c2, computes S2(c1,c2), S3(c1,c2), S3(c2,c1), S4(c1,c2) and S4(c2,c1) if and only if compute_cross_matrix[c1,c2] == True
                 - for c1 > c2, compute_cross_matrix[c1,c2] is ignored and should not be specified
-            If None, it is replaced downstream by a boolean identity matrix, so that only auto-statistics are computed.
+            If None, it is replaced by a boolean matrix full of True, so that all cross-statistics are computed.
 
 
         Output
@@ -280,13 +273,13 @@ class ST_Operator:
         ########################################
 
         # Consistency checks
-        if self.N0 != data.N0:
-            raise Exception("Scattering operator and data should have same N0")
-        if self.dg != data.dg:
-            raise Exception("Data expected with dg=0")
+        if getattr(self.wavelet_op, "N0", data.N0) != data.N0:
+            raise Exception(
+                "Wavelet operator of the scattering operator and data should have same N0"
+            )
 
         # Local value for the wavelet transform parameters
-        N0 = self.N0
+        N0 = data.N0
         J = self.J
         L = self.L
         WType = self.wavelet_op.WType
@@ -322,6 +315,12 @@ class ST_Operator:
             data.array = data.array[None, ...]  # (1,Nc,N)
         Nb, Nc = data.array.shape[0], data.array.shape[1]
 
+        compute_cross_matrix = (
+            bk.ones((Nc, Nc), dtype=bool, device=data.device)
+            if compute_cross_matrix is None
+            else compute_cross_matrix.to(device=data.device)
+        )
+
         # Create a ST_statistics instance
         data_st = ST_Statistics(
             self.DT,
@@ -355,11 +354,7 @@ class ST_Operator:
                 )
                 + bk.nan
             )
-            channels_with_auto_stats = (
-                compute_cross_matrix.diagonal()
-                if compute_cross_matrix is not None
-                else ~bk.zeros(Nc, dtype=bool)
-            )
+            channels_with_auto_stats = compute_cross_matrix.diagonal()
             for channel in range(len(channels_with_auto_stats)):
                 if not channels_with_auto_stats[channel]:
                     if not (
@@ -406,25 +401,29 @@ class ST_Operator:
             ##############################################################################
             data_st.S1[:, channels_with_auto_stats, j3, :] = self.wavelet_op.mean(
                 data_l1m[j3][:, channels_with_auto_stats, :, :],
-            )  # (Nb,Nc,L)
+            )  # (Nb,Nc,L3)
 
             ##############################################################################
             ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
             ##############################################################################
-            for c1 in range(Nc):
-                # auto S2 terms
-                if compute_cross_matrix[c1, c1]:
-                    data_st.S2[:, c1, c1, j3, :] = self.wavelet_op.mean(
-                        data_l1m[j3][:, c1, :, :, :],
-                        square=True,
-                    )  # (Nb,Nc,Nc,L) ################################## that one can easily be vectorized but carefully
-                for c2 in range(c1 + 1, Nc):
-                    # cross S2 terms (sub diagonal only)
-                    if compute_cross_matrix[c1, c2]:
-                        data_st.S2[:, c1, c2, j3, :] = self.wavelet_op.cov(
-                            data_l1[:, c1, :, :, :],
-                            data_l1[:, c2, :, :, :],
-                        )  # (Nb,L)
+            # auto S2 terms
+            data_st.S2[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
+                self.wavelet_op.mean(
+                    data_l1m[j3][:, channels_with_auto_stats, :, :, :],
+                    square=True,
+                )
+            )  # (Nb,Nc,Nc,L3)
+
+            # cross S2 terms (sub diagonal only)
+            self.wavelet_op._compute_and_store_cross_cov(
+                data_l1,
+                data_l1,
+                output=data_st.S2[:, :, :, j3, :],
+                compute_cross_matrix=compute_cross_matrix
+                * (
+                    ~bk.eye(Nc, dtype=bool, device=data.device)
+                ),  # remove diagonal wich was computed above with real mean square
+            )  # (Nb,Nc,Nc,L3)
 
             data_l1m_l2 = {}
             for j2 in range(j3 + 1):

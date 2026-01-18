@@ -6,20 +6,21 @@ from torch import nn
 from torch.optim import LBFGS
 
 # Suppose:
-# - STLDataClass is your data wrapper class (e.g. STL2DKernel)
+# - DataClass is your data wrapper class (e.g. STL_2D_Kernel_Torch or STL_2D_FFT_Torch)
 # - st_op is an operator such that st_op.apply(DC).to_flatten()
 #   returns a 1D tensor of scattering coefficients.
-# - target is your reference map of shape (1,1,128,128)
-#   and r is the corresponding scattering vector.
+# - target.array is your reference map of shape (1,1,128,128)
+#   and target_stats is the corresponding scattering vector.
 
 
 class ScatteringMatchModel(nn.Module):
     def __init__(
-        self, st_op, STLDataClass, init_shape, compute_cross_matrix, device, dtype
+        self, st_op, DataClass, pbc, init_shape, compute_cross_matrix, device, dtype
     ):
         super().__init__()
         self.st_op = st_op
-        self.STLDataClass = STLDataClass
+        self.DataClass = DataClass
+        self.pbc = pbc
         self.init_shape = init_shape
         self.mask_full_res = st_op.wavelet_op.mask_full_res
         self.compute_cross_matrix = compute_cross_matrix
@@ -48,7 +49,7 @@ class ScatteringMatchModel(nn.Module):
             )
 
     def forward(self):
-        DC_u = self.STLDataClass(self.u, pbc=self.st_op.pbc)
+        DC_u = self.DataClass(self.u, pbc=self.pbc)
         st_u = self.st_op.apply(
             DC_u, compute_cross_matrix=self.compute_cross_matrix, norm="load_ref"
         )
@@ -57,10 +58,10 @@ class ScatteringMatchModel(nn.Module):
 
 
 def optimize_scattering_LBFGS(
-    target_array,
-    STLDataClass,
+    target,
     st_op_target,
     st_op_running,
+    pbc_running=True,
     compute_cross_matrix=None,
     max_iter=100,
     nbatch=1,
@@ -76,35 +77,41 @@ def optimize_scattering_LBFGS(
 
     torch.manual_seed(seed) if seed is not None else None
 
-    if np.any(np.isnan(target_array)):
+    if target.array.isnan().any():
         print("NaN detected in the target, the synthesis takes it into account")
-    target = torch.as_tensor(
-        target_array, device=device, dtype=dtype
+
+    target.array = target.array.to(
+        device=device, dtype=dtype
     )  # dtype is now float64 on cuda but was previously float32, if it slows down your synthesis raise us this issue !!!!!
 
-    if target.ndim == 2:
-        init_shape = (nbatch, 1, *target.shape)
-    elif target.ndim == 3:
-        init_shape = (nbatch, *target.shape)
+    input_dim = target.array.ndim
+
+    if input_dim == 2:
+        init_shape = (nbatch, 1, *target.array.shape)
+    elif input_dim == 3:
+        init_shape = (nbatch, *target.array.shape)
     else:
-        raise ValueError("target_array must be 2D or 3D tensor")
+        raise ValueError("target.array must be 2D or 3D tensor")
     print("Initial shape for u:", init_shape)
 
     # Reference scattering
-    DC_target = STLDataClass(target, pbc=st_op_target.pbc)
     with torch.no_grad():
-        r = st_op_target.apply(
-            DC_target, norm="store_ref", compute_cross_matrix=compute_cross_matrix
+        target_stats = st_op_target.apply(
+            target, norm="store_ref", compute_cross_matrix=compute_cross_matrix
         ).to_flatten(keepnans=True)
-    r = r.detach()
-    target_coeffs_mask = ~r.isnan()
+    target_stats = target_stats.detach()
+    target_coeffs_mask = ~target_stats.isnan()
+    target_stats = target_stats[target_coeffs_mask]
     print("Synthesis on {:} ST coefficients".format(target_coeffs_mask.sum().item()))
-    st_op_running.S2_ref = st_op_target.S2_ref
+
+    # reference S2 for running normalization
+    st_op_running.S2_ref_sqrt_chan_diag = st_op_target.S2_ref_sqrt_chan_diag
 
     # Model with learnable u
     model = ScatteringMatchModel(
         st_op=st_op_running,
-        STLDataClass=STLDataClass,
+        DataClass=target.__class__,
+        pbc=pbc_running,
         init_shape=init_shape,
         compute_cross_matrix=compute_cross_matrix,
         device=device,
@@ -127,7 +134,7 @@ def optimize_scattering_LBFGS(
         optimizer.zero_grad()
         s_flat_u = model()
         # assert not torch.any(s_flat_u[target_coeffs_mask].isnan()) ####################### sanity check that can be removed
-        loss = ((s_flat_u[target_coeffs_mask] - r[target_coeffs_mask]).abs() ** 2).sum()
+        loss = ((s_flat_u[target_coeffs_mask] - target_stats).abs() ** 2).sum()
         loss.backward()
 
         if len(loss_history) < 2:
@@ -171,8 +178,9 @@ def optimize_scattering_LBFGS(
     if st_op_running.wavelet_op.mask_full_res is not None:
         u_opt[..., st_op_running.wavelet_op.mask_full_res.array] = torch.nan
 
-    if target_array.ndim == 2:
+    if input_dim == 2:
         u_opt = u_opt[:, 0, ...]  # remove channel dim
+        target.array = target.array[0, 0, ...]  # remove batch and channel dim
     if nbatch == 1:
         u_opt = u_opt[0]  # remove batch dim
 

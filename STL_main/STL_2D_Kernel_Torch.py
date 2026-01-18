@@ -21,6 +21,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from STL_main.ST_Operator import ST_Operator
 from STL_main.torch_backend import (
     _DEFAULT_DEVICE,
     _DEFAULT_DTYPE,
@@ -205,40 +206,36 @@ class STL_2D_Kernel_Torch:
     def get_wavelet_op(
         self,
         J=None,
-        L=None,
-        kernel_size=None,
         mask_full_res=None,
-        pbc=None,
         *args,
         **kwargs,
     ):
-        if L is None:
-            L = 4
-        if kernel_size is None:
-            kernel_size = 5
-        if J is None:
-            J = np.min([int(np.log2(self.N0[0])), int(np.log2(self.N0[1]))]) - 2
+
+        J = J if J is not None else int(np.log2(min(self.N0))) - 2
+
         if mask_full_res is None:
             if torch.any(self.array.isnan()):
-                mask_full_res = self.array.isnan()
-        if pbc is None:
-            pbc = self.pbc
+                mask_full_res = STL_2D_Kernel_Torch(array=self.array.isnan())
+
         return WaveletOperator2Dkernel_torch(
-            kernel_size,
-            L,
-            J,
-            device=self.array.device,
-            dtype=self.array.dtype,
+            J=J,
+            DT=self.DT,
+            device=self.device,
+            dtype=self.dtype,
             mask_full_res=mask_full_res,
-            pbc=pbc,
             *args,
             **kwargs,
         )
+
+    def get_ST_op(self, *args, **kwargs):
+
+        return ST_Operator(data_example=self, *args, **kwargs)
 
 
 class WaveletOperator2Dkernel_torch:
     @staticmethod
     def _get_padding_mode(pbc: bool = True) -> str:
+        assert pbc is not None, "pbc must be specified"
         return (
             "circular" if pbc else "replicate"
         )  # most suited option for non-PBC, better than 'constant' and 'reflect'
@@ -376,20 +373,26 @@ class WaveletOperator2Dkernel_torch:
 
     def __init__(
         self,
-        kernel_size: int,
-        L: int,
-        J: int,
+        J,
+        L=None,
+        kernel_size=None,
+        DT="Planar2D_kernel_torch",
         device=_DEFAULT_DEVICE,
         dtype=_DEFAULT_DTYPE,
         mask_full_res=None,
-        pbc=True,
         sigma_smooth=1.0,
         downsample_nan_weight_threshold=0.33,
         get_crop_border_size_method=None,
     ):
-        self.KERNELSZ = kernel_size
-        self.L = L
+        if J is None:
+            raise ValueError(
+                "J must be specified for WaveletOperator2Dkernel_torch class."
+            )
         self.J = J
+        self.L = L if L is not None else 4
+        self.KERNELSZ = kernel_size if kernel_size is not None else 5
+        self.DT = DT
+
         self.device = _get_device(torch.device(device))
         self.dtype = _get_dtype(dtype=dtype, device=self.device)
 
@@ -402,7 +405,6 @@ class WaveletOperator2Dkernel_torch:
         self.WType = "simple"
 
         # PBC dependant parameters
-        self.pbc = pbc
         if get_crop_border_size_method is not None:
             self._get_crop_border_size_method = get_crop_border_size_method
         else:
@@ -412,112 +414,49 @@ class WaveletOperator2Dkernel_torch:
 
         # NaNs handling
         self.mask_full_res = (
-            STL_2D_Kernel_Torch(
-                array=mask_full_res.to(device=self.device, dtype=torch.bool)
-            )
-            if mask_full_res is not None
-            else None
-        )  # None if no NaN in the data. Is True where the data is NaN. TODO: add a more flexible constructor later..!!!
+            mask_full_res  # None if no NaN in the data. Is True where the data is NaN.
+        )
         self.downsample_nan_weight_threshold = downsample_nan_weight_threshold
         (
             self._reweighting_maps_smooth,
             self._reweighting_maps_wav,
             self._layer1_mask,
             self._layer2_mask,
-        ) = self._build_reweighting_maps_and_scattering_layer_masks(
-            pbc=self.pbc
-        )  # behavior depending on PBC!!
+        ) = self._build_reweighting_maps_and_scattering_layer_masks()
 
-    def _build_reweighting_maps_and_scattering_layer_masks(self, pbc):
+    def _build_reweighting_maps_and_scattering_layer_masks(self):
         if self.mask_full_res is None:
             return None, None, None, None
         else:
-            padding_mode = self.__class__._get_padding_mode(pbc=pbc)
+            (
+                reweighting_maps_smooth_dict,
+                reweighting_maps_wav_dict,
+                layer1_mask_dict,
+                layer2_mask_dict,
+            ) = ({}, {}, {}, {})
 
-            # 1) reweighting maps needed in downsampling of layer 0 data (no wavelet convolution, only smoothing kernel convolution)
-            local_nan_weight_maps_smooth = {}
-            smooth_kernel = self._gaussian_kernel_5x5(
-                device=self.mask_full_res.array.device, dtype=self.dtype
-            )
-            assert torch.isclose(
-                smooth_kernel.sum(), torch.tensor(1.0, dtype=smooth_kernel.dtype)
-            )
+            for pbc in [False, True]:
+                padding_mode = self.__class__._get_padding_mode(pbc=pbc)
 
-            # no need for reweighting at resolution dg=0.
-            for dg in range(1, self.J):
-                parent_array = (
-                    local_nan_weight_maps_smooth[dg - 1]
-                    .array.isnan()
-                    .to(dtype=self.dtype)
-                    if dg > 1
-                    else self.mask_full_res.array.to(dtype=self.dtype)
+                # 1) reweighting maps needed in downsampling of layer 0 data (no wavelet convolution, only smoothing kernel convolution)
+                local_nan_weight_maps_smooth = {}
+                smooth_kernel = self._gaussian_kernel_5x5(
+                    device=self.mask_full_res.array.device, dtype=self.dtype
                 )
-                local_nan_weight_maps_smooth[dg] = STL_2D_Kernel_Torch(
-                    array=self._downsample_tensor(
-                        x=parent_array,
-                        smooth_kernel=smooth_kernel,
-                        dg_inc=1,
-                        padding_mode=padding_mode,
-                    ),
-                    dg=dg,
-                    N0=self.mask_full_res.N0,
-                )  # local nan fraction
+                assert torch.isclose(
+                    smooth_kernel.sum(), torch.tensor(1.0, dtype=smooth_kernel.dtype)
+                )
 
-                local_nan_weight_maps_smooth[dg].array = torch.where(
-                    condition=local_nan_weight_maps_smooth[dg].array
-                    <= self.downsample_nan_weight_threshold,
-                    input=local_nan_weight_maps_smooth[dg].array,
-                    other=nan,
-                )  # replace with nan where above threshold
-
-            # 2) reweighting maps needed in downsampling of layer 1 data (convolved once with wavelets)
-            wav_kernels_envelope = torch.ones(
-                self._wav_kernel.shape[-2:], dtype=self.dtype, device=self.device
-            ).unsqueeze(
-                0
-            )  # (1,K,K) assumes identical wavelet support for all angles
-            local_nan_weight_maps_wav = {}
-
-            # Stores at every dg=j3 NaNs position of layer 1 data (convolved once with wavelets at j3) in a mask.
-            layer1_mask = {  # {J: (N3)} one mask per scale j at resolution dg=j, same for all angles
-                dg: STL_2D_Kernel_Torch(
-                    array=torch.abs(
-                        self.__class__._conv2d_circular(
-                            x=(
-                                self.mask_full_res.array
-                                if dg == 0
-                                else local_nan_weight_maps_smooth[dg].array.isnan()
-                            ).to(dtype=self.dtype),
-                            w=wav_kernels_envelope,  # assumes identical wavelet support for all angles
-                            padding_mode=padding_mode,
-                        ).squeeze(0)
+                # no need for reweighting at resolution dg=0.
+                for dg in range(1, self.J):
+                    parent_array = (
+                        local_nan_weight_maps_smooth[dg - 1]
+                        .array.isnan()
+                        .to(dtype=self.dtype)
+                        if dg > 1
+                        else self.mask_full_res.array.to(dtype=self.dtype)
                     )
-                    > 0.0,
-                    dg=dg,
-                    N0=self.mask_full_res.N0,
-                    conv_history=[dg],
-                )
-                for dg in range(self.J)
-            }
-
-            # no need for reweighting at resolution dg=0
-            local_nan_weight_maps_wav = {
-                dg: {} for dg in range(1, self.J)
-            }  # j in range(dg-1)
-            for j in range(self.J - 1):  # level at which the map was convolved
-                for dg in range(j + 1, self.J):  # target level of downsampling
-                    if (
-                        dg == j + 1
-                    ):  # needs to convolve with wavelets' support before downsampling
-                        parent_array = layer1_mask[j].array.to(dtype=self.dtype)
-                    else:  # dg > j+1, needs only to downsample with a smoothing from previous level
-                        parent_array = (
-                            local_nan_weight_maps_wav[dg - 1][j]
-                            .array.isnan()
-                            .to(dtype=self.dtype)
-                        )
-
-                    local_nan_weight_maps_wav[dg][j] = STL_2D_Kernel_Torch(
+                    local_nan_weight_maps_smooth[dg] = STL_2D_Kernel_Torch(
                         array=self._downsample_tensor(
                             x=parent_array,
                             smooth_kernel=smooth_kernel,
@@ -526,57 +465,127 @@ class WaveletOperator2Dkernel_torch:
                         ),
                         dg=dg,
                         N0=self.mask_full_res.N0,
-                        conv_history=[j],
-                    )  # (Ndg,Ndg) local nan fraction
+                    )  # local nan fraction
 
-                    local_nan_weight_maps_wav[dg][j].array = torch.where(
-                        condition=local_nan_weight_maps_wav[dg][j].array
+                    local_nan_weight_maps_smooth[dg].array = torch.where(
+                        condition=local_nan_weight_maps_smooth[dg].array
                         <= self.downsample_nan_weight_threshold,
-                        input=local_nan_weight_maps_wav[dg][j].array,
+                        input=local_nan_weight_maps_smooth[dg].array,
                         other=nan,
-                    )  # (Ndg,Ndg) replace with nan where above threshold
+                    )  # replace with nan where above threshold
 
-            # 3) Stores at every dg=j3 and every j2 NaNs position of layer 2 data (convolved first with wavelets at j2, then possibly local operations such as modulus, and then convolved a second time with wavelets at j3) in a mask.
-            layer2_mask = {
-                j3: {
-                    j2: STL_2D_Kernel_Torch(
-                        array=(
-                            self.__class__._conv2d_circular(  # convolve with wavelet support at resolution j3
+                # 2) reweighting maps needed in downsampling of layer 1 data (convolved once with wavelets)
+                wav_kernels_envelope = torch.ones(
+                    self._wav_kernel.shape[-2:], dtype=self.dtype, device=self.device
+                ).unsqueeze(
+                    0
+                )  # (1,K,K) assumes identical wavelet support for all angles
+                local_nan_weight_maps_wav = {}
+
+                # Stores at every dg=j3 NaNs position of layer 1 data (convolved once with wavelets at j3) in a mask.
+                layer1_mask = {  # {J: (N3)} one mask per scale j at resolution dg=j, same for all angles
+                    dg: STL_2D_Kernel_Torch(
+                        array=torch.abs(
+                            self.__class__._conv2d_circular(
                                 x=(
-                                    local_nan_weight_maps_wav[j3][j2].array.isnan()
-                                    if j2 < j3
-                                    else layer1_mask[j3].array
+                                    self.mask_full_res.array
+                                    if dg == 0
+                                    else local_nan_weight_maps_smooth[dg].array.isnan()
                                 ).to(dtype=self.dtype),
-                                w=wav_kernels_envelope,
+                                w=wav_kernels_envelope,  # assumes identical wavelet support for all angles
                                 padding_mode=padding_mode,
-                            )
-                            .squeeze(0)
-                            .squeeze(0)
-                            > 0.0  # back to bool
-                        ),
+                            ).squeeze(0)
+                        )
+                        > 0.0,
+                        dg=dg,
+                        N0=self.mask_full_res.N0,
+                        conv_history=[dg],
                     )
-                    for j2 in range(j3 + 1)
+                    for dg in range(self.J)
                 }
-                for j3 in range(self.J)
-            }
 
-            # 4) final reweighting maps
-            reweighting_maps_smooth = local_nan_weight_maps_smooth
-            reweighting_maps_wav = local_nan_weight_maps_wav
-            for dg in range(1, self.J):
-                reweighting_maps_smooth[dg].array = 1.0 / (
-                    1.0 - reweighting_maps_smooth[dg].array
-                )
-                for j in range(dg):
-                    reweighting_maps_wav[dg][j].array = 1.0 / (
-                        1.0 - reweighting_maps_wav[dg][j].array
+                # no need for reweighting at resolution dg=0
+                local_nan_weight_maps_wav = {
+                    dg: {} for dg in range(1, self.J)
+                }  # j in range(dg-1)
+                for j in range(self.J - 1):  # level at which the map was convolved
+                    for dg in range(j + 1, self.J):  # target level of downsampling
+                        if (
+                            dg == j + 1
+                        ):  # needs to convolve with wavelets' support before downsampling
+                            parent_array = layer1_mask[j].array.to(dtype=self.dtype)
+                        else:  # dg > j+1, needs only to downsample with a smoothing from previous level
+                            parent_array = (
+                                local_nan_weight_maps_wav[dg - 1][j]
+                                .array.isnan()
+                                .to(dtype=self.dtype)
+                            )
+
+                        local_nan_weight_maps_wav[dg][j] = STL_2D_Kernel_Torch(
+                            array=self._downsample_tensor(
+                                x=parent_array,
+                                smooth_kernel=smooth_kernel,
+                                dg_inc=1,
+                                padding_mode=padding_mode,
+                            ),
+                            dg=dg,
+                            N0=self.mask_full_res.N0,
+                            conv_history=[j],
+                        )  # (Ndg,Ndg) local nan fraction
+
+                        local_nan_weight_maps_wav[dg][j].array = torch.where(
+                            condition=local_nan_weight_maps_wav[dg][j].array
+                            <= self.downsample_nan_weight_threshold,
+                            input=local_nan_weight_maps_wav[dg][j].array,
+                            other=nan,
+                        )  # (Ndg,Ndg) replace with nan where above threshold
+
+                # 3) Stores at every dg=j3 and every j2 NaNs position of layer 2 data (convolved first with wavelets at j2, then possibly local operations such as modulus, and then convolved a second time with wavelets at j3) in a mask.
+                layer2_mask = {
+                    j3: {
+                        j2: STL_2D_Kernel_Torch(
+                            array=(
+                                self.__class__._conv2d_circular(  # convolve with wavelet support at resolution j3
+                                    x=(
+                                        local_nan_weight_maps_wav[j3][j2].array.isnan()
+                                        if j2 < j3
+                                        else layer1_mask[j3].array
+                                    ).to(dtype=self.dtype),
+                                    w=wav_kernels_envelope,
+                                    padding_mode=padding_mode,
+                                )
+                                .squeeze(0)
+                                .squeeze(0)
+                                > 0.0  # back to bool
+                            ),
+                        )
+                        for j2 in range(j3 + 1)
+                    }
+                    for j3 in range(self.J)
+                }
+
+                # 4) final reweighting maps
+                reweighting_maps_smooth = local_nan_weight_maps_smooth
+                reweighting_maps_wav = local_nan_weight_maps_wav
+                for dg in range(1, self.J):
+                    reweighting_maps_smooth[dg].array = 1.0 / (
+                        1.0 - reweighting_maps_smooth[dg].array
                     )
+                    for j in range(dg):
+                        reweighting_maps_wav[dg][j].array = 1.0 / (
+                            1.0 - reweighting_maps_wav[dg][j].array
+                        )
+
+                reweighting_maps_smooth_dict[padding_mode] = reweighting_maps_smooth
+                reweighting_maps_wav_dict[padding_mode] = reweighting_maps_wav
+                layer1_mask_dict[padding_mode] = layer1_mask
+                layer2_mask_dict[padding_mode] = layer2_mask
 
             return (
-                reweighting_maps_smooth,
-                reweighting_maps_wav,
-                layer1_mask,
-                layer2_mask,
+                reweighting_maps_smooth_dict,
+                reweighting_maps_wav_dict,
+                layer1_mask_dict,
+                layer2_mask_dict,
             )
 
     def _find_mask(self, data):
@@ -589,12 +598,15 @@ class WaveletOperator2Dkernel_torch:
                     "So far, data mask should not be called for data at layer 0."
                 )
             assert data.dg == data.conv_history[-1]
+            padding_mode = self.__class__._get_padding_mode(pbc=data.pbc)
             if layer == 1:
-                return self._layer1_mask[data.conv_history[-1]].array
+                return self._layer1_mask[padding_mode][data.conv_history[-1]].array
             elif layer == 2:
-                return self._layer2_mask[data.conv_history[-1]][
+                return self._layer2_mask[padding_mode][data.conv_history[-1]][
                     data.conv_history[0]
                 ].array
+            else:
+                raise ValueError("len(data.conv_history) must be 0, 1 or 2.")
 
     def _build_wavelet_kernel(self, sigma=1):
         """Create a 2D Wavelet kernel."""
@@ -679,10 +691,11 @@ class WaveletOperator2Dkernel_torch:
                 pass
             return array[..., border:-border, border:-border]
 
-    def mean(self, data, square=False, dim=(-2, -1)):
+    def mean(self, data, square=False, dim=None):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         """
+        dim = dim if dim is not None else (-2, -1)
         border = self._get_crop_border_size_method(data=data, wavelet_op=self)
         cropped_array = self._crop(array=data.array, border=border)
         cropped_mask = self._crop(array=self._find_mask(data), border=border)
@@ -693,12 +706,14 @@ class WaveletOperator2Dkernel_torch:
             mask=cropped_mask,
         )
 
-    def cov(self, data1, data2, remove_mean=False, dim=(-2, -1)):
+    def cov(self, data1, data2, remove_mean=None, dim=None):
         """
         Compute the covariance between data1=self and data2 on the last two
         dimensions (Nx, Ny).
         """
         assert data1.dg == data2.dg, "data1 and data2 must have the same resolution."
+        dim = dim if dim is not None else (-2, -1)
+        remove_mean = remove_mean if remove_mean is not None else False
 
         # finding the appropriate mask
         if self.mask_full_res is None:
@@ -752,9 +767,9 @@ class WaveletOperator2Dkernel_torch:
         data1,
         data2,
         output,
+        compute_cross_matrix,
         remove_mean=False,
         dim=(-2, -1),
-        compute_cross_matrix=None,
     ):
         assert (
             data1.array.shape[1] == data2.array.shape[1]
@@ -771,12 +786,6 @@ class WaveletOperator2Dkernel_torch:
         ), "output must have shape (Nb, Nc, Nc, ...)."
         Nc = output.shape[1]  # number of channels
 
-        compute_cross_matrix = (
-            torch.eye(Nc, dtype=torch.bool)
-            if compute_cross_matrix is None
-            else compute_cross_matrix
-        )
-
         for c1 in range(Nc):
             for c2 in range(Nc):
                 if compute_cross_matrix[c1, c2]:
@@ -784,12 +793,16 @@ class WaveletOperator2Dkernel_torch:
                     output[:, c1, c2, ...] = self.cov(
                         data1=data1[:, c1, ...],
                         data2=data2[:, c2, ...],
+                        remove_mean=remove_mean,
+                        dim=dim,
                     )
 
                     if c1 != c2:
                         output[:, c2, c1, ...] = self.cov(
                             data1=data2[:, c2, ...],
                             data2=data1[:, c1, ...],
+                            remove_mean=remove_mean,
+                            dim=dim,
                         )
         return
 
@@ -809,12 +822,15 @@ class WaveletOperator2Dkernel_torch:
         torch.Tensor
             Convolved data with shape [..., L, Nx, Ny].
         """
+        # Check coherence of input data.
+        if not isinstance(data, STL_2D_Kernel_Torch):
+            print(data.__class__)
+            raise Exception("Data should be a STL_2D_Kernel_Torch instance")
+        if self.DT != data.DT:
+            raise Exception("Data and wavelet transform should have same DT")
+
         if j != data.dg:
             raise ValueError("j is not equal to dg, convolution not possible")
-
-        assert (
-            data.pbc == self.pbc
-        ), "data pbc must match the one used to build the wavelet operator, for the reweighting maps purpose."
 
         x = data.array  # [..., Nx, Ny]
 
@@ -900,10 +916,6 @@ class WaveletOperator2Dkernel_torch:
                 "Requested dg_out < current dg; upsampling not supported by downsampling method."
             )
 
-        assert (
-            data.pbc == self.pbc
-        ), "data pbc must match the one used to build the wavelet operator, for the reweighting maps purpose."
-
         data = data.copy(empty=False) if not inplace else data
         dg_inc = dg_out - data.dg
 
@@ -934,7 +946,7 @@ class WaveletOperator2Dkernel_torch:
                     if data.dg == 0:
                         input_data_mask = self.mask_full_res.array
                     else:
-                        input_data_mask = self._reweighting_maps_smooth[
+                        input_data_mask = self._reweighting_maps_smooth[padding_mode][
                             data.dg
                         ].array.isnan()
                 else:
@@ -943,11 +955,11 @@ class WaveletOperator2Dkernel_torch:
                             "convolved_at level must be greater than or equal to input data resolution."
                         )
                     if data.dg == convolved_at:
-                        input_data_mask = self._layer1_mask[data.dg].array
+                        input_data_mask = self._layer1_mask[padding_mode][data.dg].array
                     else:
-                        input_data_mask = self._reweighting_maps_wav[data.dg][
-                            convolved_at
-                        ].array.isnan()
+                        input_data_mask = self._reweighting_maps_wav[padding_mode][
+                            data.dg
+                        ][convolved_at].array.isnan()
 
                 data.array = torch.where(
                     condition=~input_data_mask,
@@ -967,9 +979,11 @@ class WaveletOperator2Dkernel_torch:
                     data.dg += 1
 
                     reweighting_map = (
-                        self._reweighting_maps_smooth[data.dg]
+                        self._reweighting_maps_smooth[padding_mode][data.dg]
                         if convolved_at is None
-                        else self._reweighting_maps_wav[data.dg][convolved_at]
+                        else self._reweighting_maps_wav[padding_mode][data.dg][
+                            convolved_at
+                        ]
                     )
 
                     data.array *= torch.where(
