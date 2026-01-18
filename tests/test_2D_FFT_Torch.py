@@ -15,7 +15,6 @@ else:
 DATA_TEST_PATH = Path(__file__).parent.parent / "data" / "test"
 
 from STL_main.STL_2D_FFT_Torch import STL_2D_FFT_Torch as DataClass
-from STL_main.STL_2D_FFT_Torch import WavelateOperator2D_FFT_torch as WaveletOperator
 
 
 def test_DataClass_mean():
@@ -40,7 +39,7 @@ def test_DataClass_cov():
     wavelet_op = data.get_wavelet_op()
 
     # test mean method
-    assert torch.allclose(wavelet_op.cov(data), torch.var(data.array), rtol=1e-3)
+    assert torch.allclose(wavelet_op.cov(data, data), torch.var(data.array), rtol=1e-3)
 
 
 def test_DataClass_downsample():
