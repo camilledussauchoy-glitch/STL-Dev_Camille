@@ -26,7 +26,10 @@ def test_DataClass_mean():
     wavelet_op = data.get_wavelet_op()
 
     # test mean method
-    assert wavelet_op.mean(data).item() == torch.mean(data.array).item()
+    assert (
+        wavelet_op.mean(data, wavelet_convolved=False).item()
+        == torch.mean(data.array).item()
+    )
 
 
 def test_DataClass_cov():
@@ -39,13 +42,17 @@ def test_DataClass_cov():
     wavelet_op = data.get_wavelet_op()
 
     # test mean method
-    assert torch.allclose(wavelet_op.cov(data, data), torch.var(data.array), rtol=1e-3)
+    assert torch.allclose(
+        wavelet_op.cov(data, data, wavelet_convolved=False),
+        torch.var(data.array),
+        rtol=1e-3,
+    )
 
 
 def test_DataClass_downsample():
 
     # test DataClass instantiation over data
-    data = DataClass(array=np.load(DATA_TEST_PATH / "Turb_6.npy"))
+    data = DataClass(array=np.load(DATA_TEST_PATH / "Turb_6.npy"), pbc=True)
 
     # test wavelet operator building
     wavelet_op = data.get_wavelet_op(J=2, L=4)
