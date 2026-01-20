@@ -692,25 +692,11 @@ class WaveletOperator2Dkernel_torch:
                 pass
             return array[..., border:-border, border:-border]
 
-    def mean(self, data, wavelet_convolved=False, square=False, dim=None):
+    def mean(self, data, square=False, dim=None):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         """
         dim = dim if dim is not None else (-2, -1)
-
-        # Not called by ST_operator
-        if not wavelet_convolved:
-            return maskmean(
-                x=data.array,
-                square=square,
-                dim=dim,
-                mask=(
-                    self.mask_full_res.array if self.mask_full_res is not None else None
-                ),
-            )
-
-        if data.pbc is None:
-            raise ValueError("data.pbc must be specified to compute mean.")
 
         border = self._get_crop_border_size_method(data=data, wavelet_op=self)
         cropped_array = self._crop(array=data.array, border=border)
@@ -722,26 +708,11 @@ class WaveletOperator2Dkernel_torch:
             mask=cropped_mask,
         )
 
-    def cov(self, data1, data2, wavelet_convolved=False, remove_mean=None, dim=None):
+    def cov(self, data1, data2, remove_mean=None, dim=None):
         """
         Compute the covariance between data1=self and data2 on the last two
         dimensions (Nx, Ny).
         """
-        # Not called by ST_operator
-        if not wavelet_convolved:
-            return maskmean(
-                x=data1.array * torch.conj(data2.array),
-                square=False,
-                dim=dim,
-                mask=(
-                    self.mask_full_res.array if self.mask_full_res is not None else None
-                ),
-            )
-
-        if data1.pbc is None or data2.pbc is None:
-            raise ValueError(
-                "data1.pbc and data2.pbc must be specified to compute cov."
-            )
 
         assert data1.dg == data2.dg, "data1 and data2 must have the same resolution."
         dim = dim if dim is not None else (-2, -1)
@@ -819,7 +790,7 @@ class WaveletOperator2Dkernel_torch:
         Nc = output.shape[1]  # number of channels
 
         for c1 in range(Nc):
-            for c2 in range(Nc):
+            for c2 in range(c1, Nc):
                 if compute_cross_matrix[c1, c2]:
 
                     output[:, c1, c2, ...] = self.cov(
