@@ -164,12 +164,19 @@ class ST_Statistics:
         )  # [Nb,Nc,Nc,J1,J2,J3,L1,L2,L3]
 
     ########################################
-    def to_norm(self, norm=None, S2_ref_sqrt_chan_diag=None, PS_ref=None):
+    def to_norm(
+        self,
+        norm_type=None,
+        S2_ref_sqrt_chan_diag=None,
+        PS_ref=None,
+        mean_ref=None,
+        var_ref=None,
+    ):
         """
         Normalize the ST statistics.
         Parameters
         ----------
-        - norm : str
+        - norm_type : str
             type of norm (“self”, “from_ref”)
         - S2_ref_sqrt_chan_diag : array
             if self.SC = "ScatCov"
@@ -189,14 +196,23 @@ class ST_Statistics:
             raise Exception("Normalization can only be done before scale_ft")
 
         # Leave the function if no normalization is required
-        if norm is None:
+        if norm_type is None:
             pass
 
         # Store_ref normalization
-        elif norm == "self":
+        elif norm_type == "self":
             # Verifications
             if self.norm:
                 raise Exception("ST statistics are already normalized")
+
+            mean_ref = self.mean * 1.0
+            self.mean = self.mean / mean_ref
+            self.mean_ref = mean_ref
+
+            var_ref = self.var * 1.0
+            self.var = self.var / var_ref
+            self.var_ref = var_ref
+
             # Perform normalization and store reference
             if self.SC == "ScatCov":
                 if self.S2_ref_sqrt_chan_diag is None:
@@ -214,16 +230,26 @@ class ST_Statistics:
             self.norm = True
 
         # Load_ref normalization
-        elif norm == "from_ref":
+        elif norm_type == "from_ref":
             # Verifications
             if self.norm:
                 raise Exception("ST statistics are already normalized")
+            if mean_ref is None:
+                raise Exception("mean_ref should be given")
+            if var_ref is None:
+                raise Exception("var_ref should be given")
             if self.SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
                 raise Exception("S2_ref_sqrt_chan_diag should be given")
             if self.compute_PS and PS_ref is None:
                 raise Exception("PS_ref should be given")
 
             # Perform normalization and store reference
+            self.mean = self.mean / mean_ref
+            self.mean_ref = mean_ref
+
+            self.var = self.var / var_ref
+            self.var_ref = var_ref
+
             if self.SC == "ScatCov":
                 # store as reference
                 self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
@@ -344,17 +370,16 @@ class ST_Statistics:
         """
 
         # Collect all S1,S2,S3,S4 into a list
+        stats = [self.mean, self.var]
+
+        if self.SC == "ScatCov":
+            stats += [self.S1, self.S2, self.S3, self.S4]
+
+        if self.compute_PS:
+            stats += [self.PS]
+
         if mean_along_batch:
-            stats = [
-                bk.mean(self.S1, 0),
-                bk.mean(self.S2, 0),
-                bk.mean(self.S3, 0),
-                bk.mean(self.S4, 0),
-            ] + ([bk.mean(self.PS, 0)] if self.compute_PS else [])
-        else:
-            stats = [self.S1, self.S2, self.S3, self.S4] + (
-                [self.PS] if self.compute_PS else []
-            )
+            stats = [bk.mean(s, 0) for s in stats]
 
         # Flatten each, remove NaNs, concat
         flattened_list = []

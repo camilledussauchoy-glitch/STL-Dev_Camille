@@ -27,7 +27,7 @@ class STL_2D_FFT_Torch:
     """
 
     def __init__(
-        self, array, dg=None, N0=None, pbc=None, conv_history=[], fourier_status=False
+        self, array, pbc=None, dg=None, N0=None, conv_history=[], fourier_status=False
     ):
         """
         Initialize the STL_2D_FFT_torch class.
@@ -725,73 +725,137 @@ class WavelateOperator2D_FFT_torch:
             return array[..., border:-border, border:-border]
 
     ###########################################################################
-    def mean(self, data, square=False, dim=(-2, -1), **kwargs):
+    def mean(self, data, wavelet_convolved=True, square=False, dim=(-2, -1), **kwargs):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         Parameters
         ----------
         - data : STL_2D_FFT_Torch
             Input data. Array is in real space.
+        - wavelet_convolved : bool
+            If True, data has been convolved at least once with wavelets.
         - square : bool
             If True, compute the mean of the square of the data.
         - dim : tuple of int
             Dimensions on which the mean is computed.
         """
-        if data.pbc and data.fourier_status:
-            # not supposed to happen with current ST_op apply method
-            if square == False:
-                return data.array[..., 0, 0]
-            else:
-                # Parseval identity
-                return maskmean(x=data.array, square=square, dim=dim, mask=None)
-        else:
+        # Not called by ST operator
+        if not wavelet_convolved:
+            # refine later for non pbc case
             if data.fourier_status:
-                # not supposed to happen with current ST_op apply method
-                data = data.set_fourier_status(
-                    target_fourier_status=False, inplace=True
-                )
-            border = self._get_crop_border_size_method(data=data, wavelet_op=self)
-            cropped_array = self._crop(array=data.array, border=border)
+                return data.array[..., 0, 0] / np.sqrt(
+                    data.array.shape[-2] * data.array.shape[-1]
+                )  # normalization factor suppose normalization='ortho' in fourier transforms
 
-            return maskmean(x=cropped_array, square=square, dim=dim)
+            else:
+                return maskmean(x=data.array, square=square, dim=dim, mask=None)
+
+        else:
+            if data.pbc is None:
+                raise ValueError("data.pbc should be specified (True or False).")
+
+            if data.pbc and data.fourier_status:
+                # not supposed to happen with current ST_op apply method
+                if square == False:
+                    return data.array[..., 0, 0] / np.sqrt(
+                        data.array.shape[-2] * data.array.shape[-1]
+                    )  # normalization factor suppose normalization='ortho' in fourier transforms
+                else:
+                    # Parseval identity
+                    return maskmean(x=data.array, square=square, dim=dim, mask=None)
+            else:
+                if data.fourier_status:
+                    # not supposed to happen with current ST_op apply method
+                    data = data.set_fourier_status(
+                        target_fourier_status=False, inplace=True
+                    )
+                border = self._get_crop_border_size_method(data=data, wavelet_op=self)
+                cropped_array = self._crop(array=data.array, border=border)
+
+                return maskmean(x=cropped_array, square=square, dim=dim)
 
     ###########################################################################
-    def cov(self, data1, data2, remove_mean=False, dim=(-2, -1), **kwargs):
+    def cov(
+        self,
+        data1,
+        data2,
+        wavelet_convolved=True,
+        remove_mean=False,
+        dim=(-2, -1),
+        **kwargs
+    ):
         """
         Compute the covariance between data1 and data2 on the last two
         dimensions (Nx, Ny).
         """
-
-        assert data1.dg == data2.dg, "data1 and data2 must have the same resolution."
-
-        border = max(
-            self._get_crop_border_size_method(data=data1, wavelet_op=self),
-            self._get_crop_border_size_method(data=data2, wavelet_op=self),
-        )
-
-        if remove_mean:
-            raise NotImplementedError("remove_mean is not yet implemented.")
-
-        if data1.pbc and data1.fourier_status and data2.pbc and data2.fourier_status:
-            # Parseval identity
-            return maskmean(
-                x=data1.array * torch.conj(data2.array),
-                square=False,
-                dim=dim,
-            )
-        elif not data1.pbc or not data2.pbc:
-            data1 = data1.set_fourier_status(target_fourier_status=False, inplace=True)
-            data2 = data2.set_fourier_status(target_fourier_status=False, inplace=True)
-
-            cropped_array = self._crop(
-                array=data1.array * torch.conj(data2.array),
-                border=border,
-            )
-
-            return maskmean(x=cropped_array, square=False, dim=dim)
+        # Not called by ST operator
+        if not wavelet_convolved:
+            if data1.fourier_status and data2.fourier_status:
+                return maskmean(
+                    x=data1.array * torch.conj(data2.array),
+                    square=False,
+                    dim=dim,
+                )  # refine later for non pbc case
+            else:
+                data1_l = data1.set_fourier_status(
+                    target_fourier_status=False, inplace=False
+                )
+                data2_l = data2.set_fourier_status(
+                    target_fourier_status=False, inplace=False
+                )
+                return maskmean(
+                    x=data1_l.array * torch.conj(data2_l.array),
+                    square=False,
+                    dim=dim,
+                )
 
         else:
-            raise NotImplementedError("Unusual case, to be investigated.")
+            if data1.pbc is None or data2.pbc is None:
+                raise ValueError(
+                    "data1.pbc and data2.pbc should be specified (True or False)."
+                )
+
+            assert (
+                data1.dg == data2.dg
+            ), "data1 and data2 must have the same resolution."
+
+            border = max(
+                self._get_crop_border_size_method(data=data1, wavelet_op=self),
+                self._get_crop_border_size_method(data=data2, wavelet_op=self),
+            )
+
+            if remove_mean:
+                raise NotImplementedError("remove_mean is not yet implemented.")
+
+            if (
+                data1.pbc
+                and data1.fourier_status
+                and data2.pbc
+                and data2.fourier_status
+            ):
+                # Parseval identity
+                return maskmean(
+                    x=data1.array * torch.conj(data2.array),
+                    square=False,
+                    dim=dim,
+                )
+            elif not data1.pbc or not data2.pbc:
+                data1_l = data1.set_fourier_status(
+                    target_fourier_status=False, inplace=False
+                )
+                data2_l = data2.set_fourier_status(
+                    target_fourier_status=False, inplace=False
+                )
+
+                cropped_array = self._crop(
+                    array=data1_l.array * torch.conj(data2_l.array),
+                    border=border,
+                )
+
+                return maskmean(x=cropped_array, square=False, dim=dim)
+
+            else:
+                raise NotImplementedError("Unusual case, to be investigated.")
 
     def _compute_and_store_cross_cov(
         self,
@@ -830,8 +894,8 @@ class WavelateOperator2D_FFT_torch:
 
                     if c1 != c2:
                         output[:, c2, c1, ...] = self.cov(
-                            data1=data2[:, c2, ...],
-                            data2=data1[:, c1, ...],
+                            data1=data1[:, c2, ...],
+                            data2=data2[:, c1, ...],
                             remove_mean=remove_mean,
                             dim=dim,
                         )

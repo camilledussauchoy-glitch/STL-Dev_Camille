@@ -148,6 +148,8 @@ class ST_Operator:
         self.mask_st = mask_st
 
         # Power spectrum computation
+        if compute_PS:
+            self.PS_op = data_example.get_PS_op()  # PowerSpectrum_Operator(N0)
         self.compute_PS = compute_PS
         self.PS_ref = PS_ref
 
@@ -337,9 +339,17 @@ class ST_Operator:
 
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
+
+        # Systematic statistics (data supposed to be real)
+        data_st.mean = self.wavelet_op.mean(
+            data, wavelet_convolved=False
+        ).real  # [Nb,Nc]
+        data_st.var = self.wavelet_op.cov(
+            data, data, wavelet_convolved=False
+        ).real  # [Nb,Nc]
+
         if compute_PS:
-            PS_op = data.get_PS_op()
-            data_st.PS = PS_op.apply(data)
+            data_st.PS = self.PS_op.apply(data)
 
         if SC == "ScatCov":
             data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
@@ -468,7 +478,7 @@ class ST_Operator:
 
                 self.wavelet_op.downsample(
                     data=l_data,
-                    dg_out=j3 + 1,
+                    dg_out=self.wavelet_op.j_to_dg[j3 + 1],
                     inplace=True,
                     replace_nan_value=self.replace_nan_value,
                 )  # (Nb,Nc,j3+1,L,N3)
@@ -476,7 +486,7 @@ class ST_Operator:
                 for j2 in range(j3 + 1):
                     self.wavelet_op.downsample(
                         data=data_l1m[j2],
-                        dg_out=j3 + 1,
+                        dg_out=self.wavelet_op.j_to_dg[j3 + 1],
                         inplace=True,
                         replace_nan_value=self.replace_nan_value,
                     )  # (Nb,Nc,j3+1,L,N3)
