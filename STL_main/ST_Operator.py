@@ -429,7 +429,7 @@ class ST_Operator:
                 * (
                     ~bk.eye(Nc, dtype=bool, device=data.device)
                 ),  # remove diagonal wich was computed above with real mean square
-                redundant_channel_pairs=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
+                redundant_channels=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
             )  # (Nb,Nc,Nc,L3)
 
             data_l1m_l2 = {}
@@ -455,7 +455,7 @@ class ST_Operator:
                     data_l1[:, :, None],
                     output=data_st.S3[:, :, :, j2, j3, :, :],
                     compute_cross_matrix=compute_cross_matrix,
-                    redundant_channel_pairs=False,
+                    redundant_channels=False,
                 )  # (Nb,Nc,Nc,L2,L3)
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
@@ -469,7 +469,7 @@ class ST_Operator:
                         data_l1m_l2[j2][:, :, None, :],
                         output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
                         compute_cross_matrix=compute_cross_matrix,
-                        redundant_channel_pairs=False,
+                        redundant_channels=False,
                     )  # (Nb,Nc,Nc,L1,L2,L3)
 
             # Downsample at Nj3
@@ -543,11 +543,13 @@ class ST_Operator:
                 print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
             if compute_PS and self.PS_ref is not None:
                 print("Replacing existing PS_ref in ST_Op")
-            data_st.to_norm(norm="self")
+            data_st.to_norm(norm_type="self")
             if SC == "ScatCov":
                 self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
                 self.PS_ref = data_st.PS_ref
+            self.mean_ref = data_st.mean_ref
+            self.var_ref = data_st.var_ref
 
         elif norm == "load_ref":
             if SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
@@ -559,12 +561,14 @@ class ST_Operator:
 
             kwargs = {}
             if SC == "ScatCov":
-                kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
+                kwargs["S2_ref_sqrt_chan_diag"] = self.S2_ref_sqrt_chan_diag
             if compute_PS:
-                kwargs["PS_ref"] = PS_ref
+                kwargs["PS_ref"] = self.PS_ref
+            kwargs["mean_ref"] = self.mean_ref
+            kwargs["var_ref"] = self.var_ref
 
             # Appel avec seulement les bons arguments
-            data_st.to_norm(norm="from_ref", **kwargs)
+            data_st.to_norm(norm_type="from_ref", **kwargs)
 
         if iso:
             data_st.to_iso()
