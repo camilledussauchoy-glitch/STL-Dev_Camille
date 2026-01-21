@@ -787,6 +787,18 @@ class WavelateOperator2D_FFT_torch:
                 square=False,
                 dim=dim,
             )
+        if (
+            data1.pbc
+            and not data1.fourier_status
+            and data2.pbc
+            and not data2.fourier_status
+        ):
+            # Parseval identity
+            return maskmean(
+                x=data1.array * torch.conj(data2.array),
+                square=False,
+                dim=dim,
+            )
         elif not data1.pbc or not data2.pbc:
             data1.set_fourier_status(target_fourier_status=False, inplace=True)
             data2.set_fourier_status(target_fourier_status=False, inplace=True)
