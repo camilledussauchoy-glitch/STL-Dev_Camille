@@ -341,8 +341,10 @@ class ST_Operator:
         # Add readability w.r.t. having it in the ST statistics initilization
 
         # Systematic statistics (data supposed to be real)
-        data_st.mean = self.wavelet_op.mean(data).real  # [Nb,Nc]
-        data_st.var = self.wavelet_op.cov(data, data).real  # [Nb,Nc]
+        # data_st.mean = self.wavelet_op.mean(data).real  # [Nb,Nc]
+        # data_st.var = self.wavelet_op.cov(data, data).real  # [Nb,Nc]
+        data_st.mean = bk.ones(Nb, Nc)  # [Nb,Nc]
+        data_st.var = bk.ones(Nb, Nc)  # [Nb,Nc]
 
         if compute_PS:
             data_st.PS = self.PS_op.apply(data)
