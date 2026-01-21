@@ -370,7 +370,7 @@ class ST_Statistics:
         """
 
         # Collect all S1,S2,S3,S4 into a list
-        stats = [self.mean, self.var]
+        stats = []  # TO DO: readd mean and var
 
         if self.SC == "ScatCov":
             stats += [self.S1, self.S2, self.S3, self.S4]
