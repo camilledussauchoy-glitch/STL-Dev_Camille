@@ -44,14 +44,6 @@ class ST_Statistics:
     # Scattering Transform
     - SC : str
         type of ST coefficients ("ScatCov", "WPH")
-    - jmin : int
-        minimum scale for ST statistics computation
-    - jmax : int
-        maximum scale for ST statistics computation
-    - dj : int
-        maximum scale difference for ST statistics computation
-    - pbc : bool
-        periodic boundary conditions
 
     # Data array parameters
     - Nb : int
@@ -61,13 +53,13 @@ class ST_Statistics:
 
     Attributes
     ----------
-    - parent parameters (DT,N0,J,L,WType,SC,jmin,jmax,dj,pbc,Nb,Nc)
+    - parent parameters (DT,N0,J,L,WType,SC,Nb,Nc)
 
     # Additional transform/compression
     - norm : str
-        type of norm ("S2", "S2_ref")
-    - S2_ref : array
-        array of reference S2 coefficients
+        type of norm (“self”, “from_ref”)
+    - S2_ref_sqrt_chan_diag : array
+        array of reference S2 coefficients (normalized by sqrt of diagonal over channels)
     - iso : bool
         keep only isotropic coefficients
     - angular_ft : bool
@@ -92,15 +84,11 @@ class ST_Statistics:
     def __init__(
         self,
         DT,
-        N0,
-        J,
-        L,
-        WType,
+        N0,  ######################################## not used?
+        J,  ######################################## not used?
+        L,  ######################################## not used?
+        WType,  ######################################## not used?
         SC,
-        jmin,
-        jmax,
-        dj,
-        pbc,
         Nb,
         Nc,
         wavelet_op,
@@ -112,7 +100,7 @@ class ST_Statistics:
 
         # Main parameters
         self.DT = DT
-        self.N0 = N0
+        self.N0 = N0  ######################################## not used?
 
         # Wavelet operator
         self.wavelet_op = wavelet_op
@@ -125,10 +113,6 @@ class ST_Statistics:
 
         # Scattering transform related parameters
         self.SC = SC
-        self.jmin = jmin
-        self.jmax = jmax
-        self.dj = dj
-        self.pbc = pbc
 
         # Data related parameters
         self.Nb = Nb
@@ -138,7 +122,7 @@ class ST_Statistics:
         # False/None for the initialization, their value are modified if these
         # methods are called by the scattering operator, or independently.
         self.norm = False
-        self.S2_ref = None
+        self.S2_ref_sqrt_chan_diag = None
         self.iso = False
         self.angular_ft = False
         self.scale_ft = False
@@ -148,17 +132,55 @@ class ST_Statistics:
         # Power spectrum computation
         self.compute_PS = compute_PS
 
+    @staticmethod
+    def _get_sqrt_chan_diag(S2_ref):
+        """
+        Prepare S2_ref that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
+        """
+        S2_ref_chan_diag = S2_ref.diagonal(dim1=1, dim2=2).movedim(
+            -1, 1
+        )  # [Nb,Nc,J,L] retrieves S2_ref diagonal over channels
+        S2_ref_sqrt_chan_diag = bk.sqrt(S2_ref_chan_diag)  # [Nb,Nc,J,L]
+        return S2_ref_sqrt_chan_diag
+
+    def _normalize_scatcov(self):
+        """
+        Normalize the ScatCov statistics S1,S2,S3,S4
+        using self.S2_ref_sqrt_chan_diag
+        """
+
+        self.S1 = self.S1 / self.S2_ref_sqrt_chan_diag  # [Nb,Nc,J1,L1]
+        self.S2 = self.S2 / (
+            self.S2_ref_sqrt_chan_diag[:, :, None]
+            * self.S2_ref_sqrt_chan_diag[:, None, :]
+        )  # [Nb,Nc,Nc,J1,L1]
+        self.S3 = self.S3 / (
+            self.S2_ref_sqrt_chan_diag[:, :, None, :, None, :, None]
+            * self.S2_ref_sqrt_chan_diag[:, None, :, None, :, None, :]
+        )  # [Nb,Nc,Nc,J1,J2,L1,L2]
+        self.S4 = self.S4 / (
+            self.S2_ref_sqrt_chan_diag[:, :, None, :, None, None, :, None, None]
+            * self.S2_ref_sqrt_chan_diag[:, None, :, None, :, None, None, :, None]
+        )  # [Nb,Nc,Nc,J1,J2,J3,L1,L2,L3]
+
     ########################################
-    def to_norm(self, norm=None, S2_ref=None, PS_ref=None):
+    def to_norm(
+        self,
+        norm_type=None,
+        S2_ref_sqrt_chan_diag=None,
+        PS_ref=None,
+        mean_ref=None,
+        var_ref=None,
+    ):
         """
         Normalize the ST statistics.
         Parameters
         ----------
-        - norm : str
+        - norm_type : str
             type of norm (“self”, “from_ref”)
-        - S2_ref : array
+        - S2_ref_sqrt_chan_diag : array
             if self.SC = "ScatCov"
-            array of reference S2 coefficients if "from_ref"
+            array of reference S2 coefficients if "from_ref" (normalized by sqrt of diagonal over channels)
         - PS_ref : array
             if self.PS = True
             array of reference Power Spectrum coefficients if "from_ref"
@@ -171,60 +193,67 @@ class ST_Statistics:
         if self.angular_ft:
             raise Exception("Normalization can only be done before angular ft")
         if self.scale_ft:
-            raise Exception("Normalization can only be done before scate_ft")
+            raise Exception("Normalization can only be done before scale_ft")
 
         # Leave the function if no normalization is required
-        if norm is None:
+        if norm_type is None:
             pass
 
         # Store_ref normalization
-        elif norm == "self":
+        elif norm_type == "self":
             # Verifications
             if self.norm:
                 raise Exception("ST statistics are already normalized")
+
+            mean_ref = self.mean * 1.0
+            self.mean = self.mean / mean_ref
+            self.mean_ref = mean_ref
+
+            var_ref = self.var * 1.0
+            self.var = self.var / var_ref
+            self.var_ref = var_ref
+
             # Perform normalization and store reference
             if self.SC == "ScatCov":
-                S2_ref = self.S2 * 1.0
-                self.S1 = self.S1 / bk.sqrt(S2_ref)
-                self.S2 = self.S2 / S2_ref
-                self.S3 = self.S3 / bk.sqrt(
-                    S2_ref[:, :, :, None, :, None] * S2_ref[:, :, None, :, None, :]
-                )
-                self.S4 = self.S4 / bk.sqrt(
-                    S2_ref[:, :, :, None, None, :, None, None]
-                    * S2_ref[:, :, None, :, None, None, :, None]
-                )
-                self.S2_ref = S2_ref
+                if self.S2_ref_sqrt_chan_diag is None:
+                    # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
+                    # and store as reference
+                    self.S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
+                self._normalize_scatcov()
 
             if self.compute_PS:
                 PS_ref = self.PS * 1.0
                 self.PS = self.PS / PS_ref
                 self.PS_ref = PS_ref
 
+            # Store normalization parameters
             self.norm = True
 
         # Load_ref normalization
-        elif norm == "from_ref":
+        elif norm_type == "from_ref":
             # Verifications
             if self.norm:
                 raise Exception("ST statistics are already normalized")
-            if self.SC == "ScatCov" and S2_ref is None:
-                raise Exception("S2_ref should be given")
+            if mean_ref is None:
+                raise Exception("mean_ref should be given")
+            if var_ref is None:
+                raise Exception("var_ref should be given")
+            if self.SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
+                raise Exception("S2_ref_sqrt_chan_diag should be given")
             if self.compute_PS and PS_ref is None:
                 raise Exception("PS_ref should be given")
 
             # Perform normalization and store reference
+            self.mean = self.mean / mean_ref
+            self.mean_ref = mean_ref
+
+            self.var = self.var / var_ref
+            self.var_ref = var_ref
+
             if self.SC == "ScatCov":
-                self.S1 = self.S1 / bk.sqrt(S2_ref)
-                self.S2 = self.S2 / S2_ref
-                self.S3 = self.S3 / bk.sqrt(
-                    S2_ref[:, :, :, None, :, None] * S2_ref[:, :, None, :, None, :]
-                )
-                self.S4 = self.S4 / bk.sqrt(
-                    S2_ref[:, :, :, None, None, :, None, None]
-                    * S2_ref[:, :, None, :, None, None, :, None]
-                )
-                self.S2_ref = S2_ref
+                # store as reference
+                self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
+                self._normalize_scatcov()
 
             if self.compute_PS:
                 self.PS = self.PS / PS_ref
@@ -240,7 +269,7 @@ class ST_Statistics:
         """
         Isotropize the set of ST statistics
 
-        Note: S2_ref is not isotropized since it is used before this step.
+        Note: S2_ref_sqrt_chan_diag is not isotropized since it is used before this step.
         Note: if self.PS = True, PS coefficients are already isotropized in PS_operator.
 
         EA: could probably be better vectorized, to be done.
@@ -263,17 +292,17 @@ class ST_Statistics:
             # self.S1 = bk.mean(self.S1.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
             # self.S1 = bk.mean(self.S2.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
             self.S1 = bk.mean(self.S1, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
-            self.S2 = bk.mean(self.S2, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            self.S2 = bk.mean(self.S2, -1)  # (Nb,Nc,Nc,J,L) -> (Nb,Nc,Nc,J)
 
             # S3 and S4
-            S3iso = bk.zeros((Nb, Nc, J, J, L))
-            S4iso = bk.zeros((Nb, Nc, J, J, J, L, L))
+            S3iso = bk.zeros((Nb, Nc, Nc, J, J, L))
+            S4iso = bk.zeros((Nb, Nc, Nc, J, J, J, L, L))
             for l1 in range(L):
                 for l2 in range(L):
-                    # (Nb,Nc,J,J,L,L) -> (Nb,Nc,J,J,L)
+                    # (Nb,Nc,Nc,J,J,L,L) -> (Nb,Nc,Nc,J,J,L)
                     S3iso[..., (l2 - l1) % L] += self.S3[..., l1, l2]
                     for l3 in range(L):
-                        # (Nb,Nc,J,J,J,L,L,L) -> (Nb,Nc,J,J,J,L,L)
+                        # (Nb,Nc,Nc,J,J,J,L,L,L) -> (Nb,Nc,Nc,J,J,J,L,L)
                         S4iso[..., (l2 - l1) % L, (l3 - l1) % L] += self.S4[
                             ..., l1, l2, l3
                         ]
@@ -341,17 +370,16 @@ class ST_Statistics:
         """
 
         # Collect all S1,S2,S3,S4 into a list
+        stats = [self.mean, self.var]
+
+        if self.SC == "ScatCov":
+            stats += [self.S1, self.S2, self.S3, self.S4]
+
+        if self.compute_PS:
+            stats += [self.PS]
+
         if mean_along_batch:
-            stats = [
-                bk.mean(self.S1, 0),
-                bk.mean(self.S2, 0),
-                bk.mean(self.S3, 0),
-                bk.mean(self.S4, 0),
-            ] + ([bk.mean(self.PS, 0)] if self.compute_PS else [])
-        else:
-            stats = [self.S1, self.S2, self.S3, self.S4] + (
-                [self.PS] if self.compute_PS else []
-            )
+            stats = [bk.mean(s, 0) for s in stats]
 
         # Flatten each, remove NaNs, concat
         flattened_list = []

@@ -7,7 +7,7 @@ Tentative proposal by EA
 
 import numpy as np
 
-import STL_main.torch_backend as bk  # from_numpy, zeros, dim, shape, nan
+import STL_main.torch_backend as bk  # from_numpy, zeros, ones, dim, shape, nan, eye
 from STL_main.ST_Statistics import ST_Statistics
 
 ###############################################################################
@@ -57,20 +57,12 @@ class ST_Operator:
     # Scattering Transform
     - SC : str
         type of ST coefficients ("ScatCov", "WPH")
-    - jmin : int
-        minimum scale for ST statistics computation
-    - jmax : int
-        maximum scale for ST statistics computation
-    - dj : int
-        maximum scale difference for ST statistics computation
-    - pbc : bool
-        periodic boundary conditions
 
     # Additional transform/compression
     - norm : str
-        type of norm ("S2", "S2_ref")
-    - S2_ref : array
-        array of reference S2 coefficients
+        type of norm (“self”, “from_ref”)
+    - S2_ref_sqrt_chan_diag : array
+        array of reference S2 coefficients (square root of the diagonal over channels)
     - iso : bool
         keep only isotropic coefficients
     - angular_ft : bool
@@ -99,17 +91,13 @@ class ST_Operator:
     ########################################
     def __init__(
         self,
-        data,
+        data_example,
         J=None,
         L=None,
         SC="ScatCov",
-        jmin=None,
-        jmax=None,
-        dj=None,
-        pbc=True,
         replace_nan_value=bk.nan,
-        norm="S2",
-        S2_ref=None,
+        norm="self",
+        S2_ref_sqrt_chan_diag=None,
         iso=False,
         angular_ft=False,
         scale_ft=False,
@@ -126,9 +114,7 @@ class ST_Operator:
         Constructor, see details above.
         """
         # Main parameters
-        self.DT = data.DT
-        self.N0 = data.N0
-        self.dg = data.dg
+        self.DT = data_example.DT
 
         # Wavelet transform and related parameters
         wavelet_op_kwargs = {}
@@ -141,8 +127,8 @@ class ST_Operator:
                 get_crop_border_size_method
             )
 
-        self.wavelet_op = data.get_wavelet_op(
-            J=J, L=L, pbc=pbc, **wavelet_op_kwargs
+        self.wavelet_op = data_example.get_wavelet_op(
+            J=J, L=L, **wavelet_op_kwargs
         )  # Wavelet_Operator(DT, N0, J, L, WType)
         self.J = self.wavelet_op.J
         self.L = self.wavelet_op.L
@@ -150,15 +136,11 @@ class ST_Operator:
 
         # Scattering transform related parameters
         self.SC = SC
-        self.jmin = jmin
-        self.jmax = jmax
-        self.dj = dj
-        self.pbc = pbc
         self.replace_nan_value = replace_nan_value
 
         # Additional transform/compression related parameters
         self.norm = norm
-        self.S2_ref = S2_ref
+        self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
         self.iso = iso
         self.angular_ft = angular_ft
         self.scale_ft = scale_ft
@@ -166,12 +148,14 @@ class ST_Operator:
         self.mask_st = mask_st
 
         # Power spectrum computation
+        if compute_PS:
+            self.PS_op = data_example.get_PS_op()  # PowerSpectrum_Operator(N0)
         self.compute_PS = compute_PS
         self.PS_ref = PS_ref
 
     ########################################
     @classmethod
-    def from_ST_Statistics(self, st_stat, N0_new=None):
+    def from_ST_Statistics(self, st_stat):
         """
         Alternative constructor, which generates the ST operator used to
         compute a given set of ST statistics.
@@ -180,8 +164,6 @@ class ST_Operator:
         ----------
         - st_stat : ST_Statistics
             st_stat instance whose parameters have to be reproduced
-        - N0_new : tuple
-            new initial size of array (can be multiple dimensions)
 
         Remark and to do
         ----------
@@ -190,22 +172,15 @@ class ST_Operator:
         for me how to deal with this point.
 
         """
-
-        N0 = st_stat.N0 if N0_new is None else N0_new
-
+        raise NotImplementedError
         return ST_Operator(
             st_stat.DT,
-            N0,
             J=st_stat.J,
             L=st_stat.L,
             WType=st_stat.WType,
             SC=st_stat.SC,
-            jmin=st_stat.jmin,
-            jmax=st_stat.jmax,
-            dj=st_stat.dj,
-            pbc=st_stat.pbc,
             norm=st_stat.norm,
-            S2_ref=st_stat.S2_ref,
+            S2_ref_sqrt_chan_diag=st_stat.S2_ref_sqrt_chan_diag,
             iso=st_stat.iso,
             angular_ft=st_stat.angular_ft,
             scale_ft=st_stat.scale_ft,
@@ -218,12 +193,8 @@ class ST_Operator:
         self,
         data,
         SC=None,
-        jmin=None,
-        jmax=None,
-        dj=None,
-        pbc=None,
         norm=None,
-        S2_ref=None,
+        S2_ref_sqrt_chan_diag=None,
         iso=None,
         angular_ft=None,
         scale_ft=None,
@@ -231,6 +202,7 @@ class ST_Operator:
         mask_st=None,
         compute_PS=None,
         PS_ref=None,
+        compute_cross_matrix=None,
     ):
         """
         Compute the Scattering Transform (ST) of data, which are either stored
@@ -259,22 +231,14 @@ class ST_Operator:
         # Scattering Transform
         - SC : str
             type of ST coefficients ("ScatCov", "WPH")
-        - jmin : int
-            minimum scale for ST statistics computation
-        - jmax : int
-            maximum scale for ST statistics computation
-        - dj : int
-            maximum scale difference for ST statistics computation
-        - pbc : bool
-            periodic boundary conditions
         - pass_mask : bool
             Pass mask to ST statistics object if True
 
         # Additional transform/compression
         - norm : str
-            type of norm ("S2", "S2_ref")
-        - S2_ref : array
-            array of reference S2 coefficients
+            type of norm ("self", "from_ref")
+        - S2_ref_sqrt_chan_diag : array
+            array of reference S2 coefficients (square root of the diagonal over channels)
         - iso : bool
             keep only isotropic coefficients
         - angular_ft : bool
@@ -290,6 +254,15 @@ class ST_Operator:
         - compute_PS : bool
             whether to compute power spectrum coefficients in addition to ST statistics
 
+        # Cross statistics computation
+        - compute_cross_matrix : ndarray of bool (Default: None which is auto-statistics only)
+            Upper triangular matrix with shape (Nc,Nc), which determines pairs of channels for which to compute cross-statistics.
+            More precisely:
+                - computes S1(c1), S2(c1,c1), S3(c1,c1) and S4(c1,c1) if and only if compute_cross_matrix[c1,c1] == True
+                - for c1 < c2, computes S2(c1,c2), S3(c1,c2), S3(c2,c1), S4(c1,c2) and S4(c2,c1) if and only if compute_cross_matrix[c1,c2] == True
+                - for c1 > c2, compute_cross_matrix[c1,c2] is ignored and should not be specified
+            If None, it is replaced by a boolean matrix full of True, so that all cross-statistics are computed.
+
 
         Output
         ----------
@@ -302,27 +275,27 @@ class ST_Operator:
         ########################################
 
         # Consistency checks
-        if self.N0 != data.N0:
-            raise Exception("Scattering operator and data should have same N0")
-        if self.dg != data.dg:
-            raise Exception("Data expected with dg=0")
+        if getattr(self.wavelet_op, "N0", data.N0) != data.N0:
+            raise Exception(
+                "Wavelet operator of the scattering operator and data should have same N0"
+            )
 
         # Local value for the wavelet transform parameters
-        N0 = self.N0
+        N0 = data.N0
         J = self.J
         L = self.L
         WType = self.wavelet_op.WType
 
         # Local value for the scattering transform parameters
         SC = self.SC if SC is None else SC
-        jmin = self.jmin if jmin is None else jmin
-        jmax = self.jmax if jmax is None else jmax
-        dj = self.dj if dj is None else dj
-        pbc = self.pbc if pbc is None else pbc
 
         # Local value for the additional transforms parameters
         norm = self.norm if norm is None else norm
-        S2_ref = self.S2_ref if S2_ref is None else S2_ref
+        S2_ref_sqrt_chan_diag = (
+            self.S2_ref_sqrt_chan_diag
+            if S2_ref_sqrt_chan_diag is None
+            else S2_ref_sqrt_chan_diag
+        )
         iso = self.iso if iso is None else iso
         angular_ft = self.angular_ft if angular_ft is None else angular_ft
         scale_ft = self.scale_ft if scale_ft is None else scale_ft
@@ -344,6 +317,12 @@ class ST_Operator:
             data.array = data.array[None, ...]  # (1,Nc,N)
         Nb, Nc = data.array.shape[0], data.array.shape[1]
 
+        compute_cross_matrix = (
+            bk.ones((Nc, Nc), dtype=bool, device=data.device)
+            if compute_cross_matrix is None
+            else compute_cross_matrix.to(device=data.device)
+        )
+
         # Create a ST_statistics instance
         data_st = ST_Statistics(
             self.DT,
@@ -352,10 +331,6 @@ class ST_Operator:
             L,
             WType,
             SC,
-            jmin,
-            jmax,
-            dj,
-            pbc,
             Nb,
             Nc,
             self.wavelet_op,
@@ -364,20 +339,38 @@ class ST_Operator:
 
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
+
+        # Systematic statistics (data supposed to be real)
+        data_st.mean = self.wavelet_op.mean(data).real  # [Nb,Nc]
+        data_st.var = self.wavelet_op.cov(data, data).real  # [Nb,Nc]
+
         if compute_PS:
-            PS_op = data.get_PS_op()
-            data_st.PS = PS_op.apply(data)
+            data_st.PS = self.PS_op.apply(data)
 
         if SC == "ScatCov":
-            data_st.S1 = bk.zeros((Nb, Nc, J, L))
-            data_st.S2 = bk.zeros((Nb, Nc, J, L))
+            data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
+            data_st.S2 = bk.zeros((Nb, Nc, Nc, J, L)) + bk.nan
             data_st.S3 = (
-                bk.zeros((Nb, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
-            )
-            data_st.S4 = (
-                bk.zeros((Nb, Nc, J, J, J, L, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
+                bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
                 + bk.nan
             )
+            data_st.S4 = (
+                bk.zeros(
+                    (Nb, Nc, Nc, J, J, J, L, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE
+                )
+                + bk.nan
+            )
+            channels_with_auto_stats = compute_cross_matrix.diagonal()
+            for channel in range(len(channels_with_auto_stats)):
+                if not channels_with_auto_stats[channel]:
+                    if not (
+                        compute_cross_matrix[channel, channel + 1 :].any()
+                        or compute_cross_matrix[:channel, channel].any()
+                    ):
+                        # If no auto-statistics are asked for this channel, we require it to appear in at least one cross-statistics
+                        raise Exception(
+                            f"Channel {channel} auto-statistics are not demanded and does not appear in any cross-statistics neither.\nPlease remove it or constrain at least its auto-statistics or one of its cross-statistics."
+                        )
 
         ########################################
         # ST coefficients computation
@@ -399,7 +392,7 @@ class ST_Operator:
 
         for j3 in range(J):
             # Compute first convolution and modulus
-            data_l1 = self.wavelet_op.apply(l_data, j=j3, pbc=pbc)  # (Nb,Nc,L,N3)
+            data_l1 = self.wavelet_op.apply(l_data, j=j3)  # (Nb,Nc,L,N3)
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
 
             if False and self.wavelet_op.mask_full_res is not None:
@@ -412,21 +405,38 @@ class ST_Operator:
             ##############################################################################
             ########################## S1(j3) = Mean(|I*psi3|) ###########################
             ##############################################################################
-            data_st.S1[:, :, j3, :] = self.wavelet_op.mean(
-                data_l1m[j3], pbc=pbc
-            )  # (Nb,Nc,L)
+            data_st.S1[:, channels_with_auto_stats, j3, :] = self.wavelet_op.mean(
+                data_l1m[j3][:, channels_with_auto_stats, :, :],
+            )  # (Nb,Nc,L3)
 
             ##############################################################################
             ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
             ##############################################################################
-            data_st.S2[:, :, j3, :] = self.wavelet_op.mean(
-                data_l1m[j3], square=True, pbc=pbc
-            )  # (Nb,Nc,L)
+            # auto S2 terms
+            data_st.S2[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
+                self.wavelet_op.mean(
+                    data_l1m[j3][:, channels_with_auto_stats, :, :, :],
+                    square=True,
+                )
+            )  # (Nb,Nc,Nc,L3)
+
+            # cross S2 terms (sub diagonal only)
+            self.wavelet_op._compute_and_store_cross_cov(
+                data_l1,
+                data_l1,
+                output=data_st.S2[:, :, :, j3, :],
+                compute_cross_matrix=compute_cross_matrix
+                * (
+                    ~bk.eye(Nc, dtype=bool, device=data.device)
+                ),  # remove diagonal wich was computed above with real mean square
+                redundant_channel_pairs=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
+            )  # (Nb,Nc,Nc,L3)
 
             data_l1m_l2 = {}
             for j2 in range(j3 + 1):
                 data_l1m_l2_j2 = self.wavelet_op.apply(
-                    data_l1m[j2], j=j3, pbc=pbc
+                    data_l1m[j2],
+                    j=j3,
                 )  # (Nb,Nc,L2,L3,N3)
 
                 if False and self.wavelet_op.mask_full_res is not None:
@@ -440,11 +450,13 @@ class ST_Operator:
                 ##############################################################################
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
-                data_st.S3[:, :, j2, j3, :, :] = self.wavelet_op.cov(
+                self.wavelet_op._compute_and_store_cross_cov(
                     data_l1m_l2_j2,
                     data_l1[:, :, None],
-                    pbc=pbc,
-                )  # (Nb,Nc,L2,L3)
+                    output=data_st.S3[:, :, :, j2, j3, :, :],
+                    compute_cross_matrix=compute_cross_matrix,
+                    redundant_channel_pairs=False,
+                )  # (Nb,Nc,Nc,L2,L3)
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
 
@@ -452,30 +464,30 @@ class ST_Operator:
                     ##############################################################################
                     ############## S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3) ##############
                     ##############################################################################
-                    data_st.S4[:, :, j1, j2, j3, :, :, :] = self.wavelet_op.cov(
+                    self.wavelet_op._compute_and_store_cross_cov(
                         data_l1m_l2[j1][:, :, :, None],
-                        data_l1m_l2[j2][:, :, None] if j1 != j2 else None,
-                        pbc=pbc,
-                    )  # (Nb,Nc,L1,L2,L3)
+                        data_l1m_l2[j2][:, :, None, :],
+                        output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
+                        compute_cross_matrix=compute_cross_matrix,
+                        redundant_channel_pairs=False,
+                    )  # (Nb,Nc,Nc,L1,L2,L3)
 
             # Downsample at Nj3
             if j3 < J - 1:
 
                 self.wavelet_op.downsample(
                     data=l_data,
-                    dg_out=j3 + 1,
+                    dg_out=self.wavelet_op.j_to_dg[j3 + 1],
                     inplace=True,
                     replace_nan_value=self.replace_nan_value,
-                    pbc=pbc,
                 )  # (Nb,Nc,j3+1,L,N3)
 
                 for j2 in range(j3 + 1):
                     self.wavelet_op.downsample(
                         data=data_l1m[j2],
-                        dg_out=j3 + 1,
+                        dg_out=self.wavelet_op.j_to_dg[j3 + 1],
                         inplace=True,
                         replace_nan_value=self.replace_nan_value,
-                        pbc=pbc,
                     )  # (Nb,Nc,j3+1,L,N3)
 
         """
@@ -527,25 +539,27 @@ class ST_Operator:
         if norm is None:
             pass
         elif norm == "store_ref":
-            if SC == "ScatCov" and self.S2_ref is not None:
-                print("Replacing existing S2_ref in ST_Op")
+            if SC == "ScatCov" and self.S2_ref_sqrt_chan_diag is not None:
+                print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
             if compute_PS and self.PS_ref is not None:
                 print("Replacing existing PS_ref in ST_Op")
             data_st.to_norm(norm="self")
             if SC == "ScatCov":
-                self.S2_ref = data_st.S2_ref
+                self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
                 self.PS_ref = data_st.PS_ref
 
         elif norm == "load_ref":
-            if SC == "ScatCov" and S2_ref is None:
-                raise Exception("S2_ref should be stored in the ST_Operator")
+            if SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
+                raise Exception(
+                    "S2_ref_sqrt_chan_diag should be stored in the ST_Operator"
+                )
             if compute_PS and PS_ref is None:
                 raise Exception("PS_ref should be stored in the ST_Operator")
 
             kwargs = {}
             if SC == "ScatCov":
-                kwargs["S2_ref"] = S2_ref
+                kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
             if compute_PS:
                 kwargs["PS_ref"] = PS_ref
 

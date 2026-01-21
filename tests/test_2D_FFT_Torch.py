@@ -14,9 +14,6 @@ else:
     print(f"Parent directory already in sys.path: ...\\{PARENT_DIR.name}")
 DATA_TEST_PATH = Path(__file__).parent.parent / "data" / "test"
 
-from STL_main.STL_2D_FFT_Torch import (
-    CrappyWavelateOperator2D_FFT_torch as WaveletOperator,
-)
 from STL_main.STL_2D_FFT_Torch import STL_2D_FFT_Torch as DataClass
 
 
@@ -42,13 +39,17 @@ def test_DataClass_cov():
     wavelet_op = data.get_wavelet_op()
 
     # test mean method
-    assert torch.allclose(wavelet_op.cov(data), torch.var(data.array), rtol=1e-3)
+    assert torch.allclose(
+        wavelet_op.cov(data, data),
+        torch.var(data.array),
+        rtol=1e-3,
+    )
 
 
 def test_DataClass_downsample():
 
     # test DataClass instantiation over data
-    data = DataClass(array=np.load(DATA_TEST_PATH / "Turb_6.npy"))
+    data = DataClass(array=np.load(DATA_TEST_PATH / "Turb_6.npy"), pbc=True)
 
     # test wavelet operator building
     wavelet_op = data.get_wavelet_op(J=2, L=4)
