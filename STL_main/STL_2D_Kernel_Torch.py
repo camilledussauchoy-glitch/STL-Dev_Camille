@@ -595,9 +595,14 @@ class WaveletOperator2Dkernel_torch:
         else:
             layer = len(data.conv_history)
             if layer == 0:
-                raise NotImplementedError(
-                    "So far, data mask should not be called for data at layer 0."
-                )
+                # For mean computation at layer 0 and full resolution, use full res mask
+                # TODO: implement for downgraded resolution at layer 0 if needed
+                assert data.dg == 0
+                return self.mask_full_res.array
+
+                # raise NotImplementedError(
+                #     "So far, data mask should not be called for data at layer 0."
+                # )
             assert data.dg == data.conv_history[-1]
             padding_mode = self.__class__._get_padding_mode(pbc=data.pbc)
             if layer == 1:
@@ -696,11 +701,14 @@ class WaveletOperator2Dkernel_torch:
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         """
-        dim = dim if dim is not None else (-2, -1)
+        if data.pbc is None and len(data.conv_history) > 0:
+            raise ValueError("data.pbc should be specified (True or False).")
 
         border = self._get_crop_border_size_method(data=data, wavelet_op=self)
         cropped_array = self._crop(array=data.array, border=border)
         cropped_mask = self._crop(array=self._find_mask(data), border=border)
+
+        dim = dim if dim is not None else (-2, -1)
         return maskmean(
             x=cropped_array,
             square=square,
@@ -713,6 +721,13 @@ class WaveletOperator2Dkernel_torch:
         Compute the covariance between data1=self and data2 on the last two
         dimensions (Nx, Ny).
         """
+
+        if (data1.pbc is None and len(data1.conv_history) > 0) or (
+            data2.pbc is None and len(data2.conv_history) > 0
+        ):
+            raise ValueError(
+                "data1.pbc and data2.pbc should be specified (True or False)."
+            )
 
         assert data1.dg == data2.dg, "data1 and data2 must have the same resolution."
         dim = dim if dim is not None else (-2, -1)
@@ -771,6 +786,7 @@ class WaveletOperator2Dkernel_torch:
         data2,
         output,
         compute_cross_matrix,
+        redundant_channel_pairs,
         remove_mean=False,
         dim=(-2, -1),
     ):
@@ -800,7 +816,7 @@ class WaveletOperator2Dkernel_torch:
                         dim=dim,
                     )
 
-                    if c1 != c2:
+                    if not redundant_channel_pairs and c1 != c2:
                         output[:, c2, c1, ...] = self.cov(
                             data1=data1[:, c2, ...],
                             data2=data2[:, c1, ...],

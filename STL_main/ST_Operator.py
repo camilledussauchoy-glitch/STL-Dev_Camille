@@ -429,6 +429,7 @@ class ST_Operator:
                 * (
                     ~bk.eye(Nc, dtype=bool, device=data.device)
                 ),  # remove diagonal wich was computed above with real mean square
+                redundant_channel_pairs=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
             )  # (Nb,Nc,Nc,L3)
 
             data_l1m_l2 = {}
@@ -454,6 +455,7 @@ class ST_Operator:
                     data_l1[:, :, None],
                     output=data_st.S3[:, :, :, j2, j3, :, :],
                     compute_cross_matrix=compute_cross_matrix,
+                    redundant_channel_pairs=False,
                 )  # (Nb,Nc,Nc,L2,L3)
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
@@ -467,6 +469,7 @@ class ST_Operator:
                         data_l1m_l2[j2][:, :, None, :],
                         output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
                         compute_cross_matrix=compute_cross_matrix,
+                        redundant_channel_pairs=False,
                     )  # (Nb,Nc,Nc,L1,L2,L3)
 
             # Downsample at Nj3

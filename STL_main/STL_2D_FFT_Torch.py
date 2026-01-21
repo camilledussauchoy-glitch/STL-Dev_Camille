@@ -738,19 +738,16 @@ class WavelateOperator2D_FFT_torch:
             Dimensions on which the mean is computed.
         """
 
-        if len(data.conv_history) > 0:
-            if data.pbc is None:
-                raise ValueError("data.pbc should be specified (True or False).")
+        if data.pbc is None and len(data.conv_history) > 0:
+            raise ValueError("data.pbc should be specified (True or False).")
 
         if data.pbc and data.fourier_status:
-            # not supposed to happen with current ST_op apply method
-            if square == False:
-                return data.array[..., 0, 0] / np.sqrt(
-                    data.array.shape[-2] * data.array.shape[-1]
-                )  # normalization factor suppose normalization='ortho' in fourier transforms
-            else:
-                # Parseval identity
-                return maskmean(x=data.array, square=square, dim=dim, mask=None)
+            return (
+                data.array[..., 0, 0]
+                / np.sqrt(data.array.shape[-2] * data.array.shape[-1])
+            ) ** (
+                1 if not square else 2
+            )  # normalization factor suppose normalization='ortho' in fourier transforms
         else:
             if data.fourier_status:
                 # not supposed to happen with current ST_op apply method
@@ -770,6 +767,11 @@ class WavelateOperator2D_FFT_torch:
         """
         assert data1.dg == data2.dg, "data1 and data2 must have the same resolution."
 
+        if (data1.pbc is None and len(data1.conv_history) > 0) or (
+            data2.pbc is None and len(data2.conv_history) > 0
+        ):
+            raise ValueError("data.pbc should be specified (True or False).")
+
         border = max(
             self._get_crop_border_size_method(data=data1, wavelet_op=self),
             self._get_crop_border_size_method(data=data2, wavelet_op=self),
@@ -786,15 +788,11 @@ class WavelateOperator2D_FFT_torch:
                 dim=dim,
             )
         elif not data1.pbc or not data2.pbc:
-            data1_l = data1.set_fourier_status(
-                target_fourier_status=False, inplace=False
-            )
-            data2_l = data2.set_fourier_status(
-                target_fourier_status=False, inplace=False
-            )
+            data1.set_fourier_status(target_fourier_status=False, inplace=True)
+            data2.set_fourier_status(target_fourier_status=False, inplace=True)
 
             cropped_array = self._crop(
-                array=data1_l.array * torch.conj(data2_l.array),
+                array=data1.array * torch.conj(data2.array),
                 border=border,
             )
 
@@ -809,6 +807,7 @@ class WavelateOperator2D_FFT_torch:
         data2,
         output,
         compute_cross_matrix,
+        redundant_channels,
         remove_mean=False,
         dim=(-2, -1),
     ):
@@ -838,7 +837,7 @@ class WavelateOperator2D_FFT_torch:
                         dim=dim,
                     )
 
-                    if c1 != c2:
+                    if not redundant_channels and c1 != c2:
                         output[:, c2, c1, ...] = self.cov(
                             data1=data1[:, c2, ...],
                             data2=data2[:, c1, ...],
