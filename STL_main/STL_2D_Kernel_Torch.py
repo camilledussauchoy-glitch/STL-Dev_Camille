@@ -786,7 +786,7 @@ class WaveletOperator2Dkernel_torch:
         data2,
         output,
         compute_cross_matrix,
-        redundant_channel_pairs,
+        redundant_channels,
         remove_mean=False,
         dim=(-2, -1),
     ):
@@ -816,7 +816,7 @@ class WaveletOperator2Dkernel_torch:
                         dim=dim,
                     )
 
-                    if not redundant_channel_pairs and c1 != c2:
+                    if not redundant_channels and c1 != c2:
                         output[:, c2, c1, ...] = self.cov(
                             data1=data1[:, c2, ...],
                             data2=data2[:, c1, ...],
