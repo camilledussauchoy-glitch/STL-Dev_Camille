@@ -99,12 +99,15 @@ def optimize_scattering_LBFGS(
         target_stats = st_op_target.apply(
             target, norm="store_ref", compute_cross_matrix=compute_cross_matrix
         ).to_flatten(keepnans=True)
+
     target_stats = target_stats.detach()
     target_coeffs_mask = ~target_stats.isnan()
     target_stats = target_stats[target_coeffs_mask]
     print("Synthesis on {:} ST coefficients".format(target_coeffs_mask.sum().item()))
 
-    # reference S2 for running normalization
+    # reference mean, var and S2 for running normalization
+    st_op_running.mean_ref = st_op_target.mean_ref
+    st_op_running.var_ref = st_op_target.var_ref
     st_op_running.S2_ref_sqrt_chan_diag = st_op_target.S2_ref_sqrt_chan_diag
 
     # Model with learnable u
