@@ -87,8 +87,10 @@ def optimize_scattering_LBFGS(
     input_dim = target.array.ndim
 
     if input_dim == 2:
+        target_shape = (1, 1, *target.array.shape)
         init_shape = (nbatch, 1, *target.array.shape)
     elif input_dim == 3:
+        target_shape = (1, *target.array.shape)
         init_shape = (nbatch, *target.array.shape)
     else:
         raise ValueError("target.array must be 2D or 3D tensor")
@@ -96,9 +98,20 @@ def optimize_scattering_LBFGS(
 
     # Reference scattering
     with torch.no_grad():
+
+        # Standardize target before computing stats
+        l_target = target.copy(empty=False)
+
+        l_target.array = l_target.array.reshape(target_shape)
+        l_target, mean_target, std_target = st_op_target.wavelet_op.standardize(
+            l_target, inplace=True
+        )
+
         target_stats = st_op_target.apply(
-            target, norm="store_ref", compute_cross_matrix=compute_cross_matrix
-        ).to_flatten(keepnans=True)
+            l_target, norm="store_ref", compute_cross_matrix=compute_cross_matrix
+        ).to_flatten(
+            keepnans=True
+        )  # No mean along batch bc target is expected to only have one sample
 
     target_stats = target_stats.detach()
     target_coeffs_mask = ~target_stats.isnan()
@@ -106,8 +119,6 @@ def optimize_scattering_LBFGS(
     print("Synthesis on {:} ST coefficients".format(target_coeffs_mask.sum().item()))
 
     # reference mean, var and S2 for running normalization
-    st_op_running.mean_ref = st_op_target.mean_ref
-    st_op_running.var_ref = st_op_target.var_ref
     st_op_running.S2_ref_sqrt_chan_diag = st_op_target.S2_ref_sqrt_chan_diag
 
     # Model with learnable u
@@ -135,7 +146,7 @@ def optimize_scattering_LBFGS(
 
     def closure():
         optimizer.zero_grad()
-        s_flat_u = model()
+        s_flat_u = model()  # forward pass (call model.forward())
         # assert not torch.any(s_flat_u[target_coeffs_mask].isnan()) ####################### sanity check that can be removed
         loss = ((s_flat_u[target_coeffs_mask] - target_stats).abs() ** 2).sum()
         loss.backward()
@@ -178,12 +189,19 @@ def optimize_scattering_LBFGS(
     print(f"Execution time: {end - start:.3f} s")
 
     u_opt = model.u.detach()
+
+    # Unstandardize u_opt with target mean and var before computing stats
+    DC_u_opt = target.__class__(u_opt, pbc=pbc_running)
+    st_op_running.wavelet_op.unstandardize(
+        DC_u_opt, mean=mean_target, std=std_target, inplace=True
+    )
+    u_opt = DC_u_opt.array
+
     if st_op_running.wavelet_op.mask_full_res is not None:
         u_opt[..., st_op_running.wavelet_op.mask_full_res.array] = torch.nan
 
     if input_dim == 2:
         u_opt = u_opt[:, 0, ...]  # remove channel dim
-        target.array = target.array[0, 0, ...]  # remove batch and channel dim
     if nbatch == 1:
         u_opt = u_opt[0]  # remove batch dim
 

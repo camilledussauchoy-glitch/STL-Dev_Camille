@@ -339,15 +339,13 @@ class ST_Operator:
 
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
+        l_data = data.copy()
 
-        # Systematic statistics (data supposed to be real)
-        # data_st.mean = self.wavelet_op.mean(data).real  # [Nb,Nc]
-        # data_st.var = self.wavelet_op.cov(data, data).real  # [Nb,Nc]
-        data_st.mean = 1  # [Nb,Nc]
-        data_st.var = 1  # [Nb,Nc]
+        data_st.mean = self.wavelet_op.mean(l_data)  # [Nb,Nc]
+        data_st.var = self.wavelet_op.cov(l_data, l_data)  # [Nb,Nc]
 
         if compute_PS:
-            data_st.PS = self.PS_op.apply(data)
+            data_st.PS = self.PS_op.apply(l_data)
 
         if SC == "ScatCov":
             data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
@@ -389,7 +387,6 @@ class ST_Operator:
         # for FFT
 
         data_l1m = {}
-        l_data = data.copy()
         ### Higher order computation ###
 
         for j3 in range(J):
@@ -550,8 +547,6 @@ class ST_Operator:
                 self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
                 self.PS_ref = data_st.PS_ref
-            self.mean_ref = data_st.mean_ref
-            self.var_ref = data_st.var_ref
 
         elif norm == "load_ref":
             if SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
@@ -566,8 +561,6 @@ class ST_Operator:
                 kwargs["S2_ref_sqrt_chan_diag"] = self.S2_ref_sqrt_chan_diag
             if compute_PS:
                 kwargs["PS_ref"] = self.PS_ref
-            kwargs["mean_ref"] = self.mean_ref
-            kwargs["var_ref"] = self.var_ref
 
             # Appel avec seulement les bons arguments
             data_st.to_norm(norm_type="from_ref", **kwargs)

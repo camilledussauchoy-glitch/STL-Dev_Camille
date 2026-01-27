@@ -164,14 +164,7 @@ class ST_Statistics:
         )  # [Nb,Nc,Nc,J1,J2,J3,L1,L2,L3]
 
     ########################################
-    def to_norm(
-        self,
-        norm_type=None,
-        S2_ref_sqrt_chan_diag=None,
-        PS_ref=None,
-        mean_ref=None,
-        var_ref=None,
-    ):
+    def to_norm(self, norm_type=None, S2_ref_sqrt_chan_diag=None, PS_ref=None):
         """
         Normalize the ST statistics.
         Parameters
@@ -205,14 +198,6 @@ class ST_Statistics:
             if self.norm:
                 raise Exception("ST statistics are already normalized")
 
-            mean_ref = self.mean * 1.0
-            self.mean = self.mean / mean_ref
-            self.mean_ref = mean_ref
-
-            var_ref = self.var * 1.0
-            self.var = self.var / var_ref
-            self.var_ref = var_ref
-
             # Perform normalization and store reference
             if self.SC == "ScatCov":
                 if self.S2_ref_sqrt_chan_diag is None:
@@ -234,21 +219,10 @@ class ST_Statistics:
             # Verifications
             if self.norm:
                 raise Exception("ST statistics are already normalized")
-            if mean_ref is None:
-                raise Exception("mean_ref should be given")
-            if var_ref is None:
-                raise Exception("var_ref should be given")
             if self.SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
                 raise Exception("S2_ref_sqrt_chan_diag should be given")
             if self.compute_PS and PS_ref is None:
                 raise Exception("PS_ref should be given")
-
-            # Perform normalization and store reference
-            self.mean = self.mean / mean_ref
-            self.mean_ref = mean_ref
-
-            self.var = self.var / var_ref
-            self.var_ref = var_ref
 
             if self.SC == "ScatCov":
                 # store as reference
@@ -369,9 +343,10 @@ class ST_Statistics:
 
         """
 
-        # Collect all S1,S2,S3,S4 into a list
-        stats = []  # TO DO: readd mean and var
+        # Collect all statistics into a list
+        stats = [self.mean, self.var]  # Always include mean and variance
 
+        # Collect all S1,S2,S3,S4 into a list
         if self.SC == "ScatCov":
             stats += [self.S1, self.S2, self.S3, self.S4]
 

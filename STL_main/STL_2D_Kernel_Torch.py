@@ -709,6 +709,7 @@ class WaveletOperator2Dkernel_torch:
         cropped_mask = self._crop(array=self._find_mask(data), border=border)
 
         dim = dim if dim is not None else (-2, -1)
+
         return maskmean(
             x=cropped_array,
             square=square,
@@ -779,6 +780,65 @@ class WaveletOperator2Dkernel_torch:
         )
 
         return cov
+
+    ###########################################################################
+    def standardize(self, data, inplace=False, dim=None):
+        """
+        Standardize the data by removing the mean and scaling to unit variance
+        on the last two dimensions (Nx, Ny) in real space.
+
+        Parameters
+        ----------
+        - data : STL_2D_Kernel_Torch
+            Input data whose array attribute has to be standardized.
+
+        Returns
+        -------
+        - STL_2D_Kernel_Torch
+            Standardized data.
+        """
+
+        if dim is None:
+            dim = (-2, -1)
+
+        l_data = data.copy(empty=False) if not inplace else data
+
+        mean = self.mean(l_data)  # [Nb,Nc]
+        l_data.array = (
+            l_data.array - mean[..., None, None]
+        )  # centering first because no remove_mean in cov
+
+        var = self.cov(l_data, l_data)
+        std = torch.sqrt(var)
+
+        l_data.array = l_data.array / std[..., None, None]
+
+        return l_data, mean, std
+
+    ###########################################################################
+    def unstandardize(self, data, mean, std, inplace=False):
+        """
+        Unstandardize the data by scaling back using the provided mean and std.
+
+        Parameters
+        ----------
+        - data : STL_2D_Kernel_Torch
+            Input data whose array attribute has to be unstandardized.
+        - mean : torch.Tensor
+            Mean used for standardization.
+        - std : torch.Tensor
+            Standard deviation used for standardization.
+
+        Returns
+        -------
+        - STL_2D_Kernel_Torch
+            Unstandardized data.
+        """
+        l_data = data.copy(empty=False) if not inplace else data
+
+        l_data.array = l_data.array * std[..., None, None] + mean[..., None, None]
+
+        return l_data
 
     def _compute_and_store_cross_cov(
         self,

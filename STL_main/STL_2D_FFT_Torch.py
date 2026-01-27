@@ -261,7 +261,7 @@ class STL_2D_FFT_Torch:
             device=self.device,
             dtype=self.dtype,
             *args,
-            **kwargs
+            **kwargs,
         )
 
     ###############################################################################
@@ -273,7 +273,7 @@ class STL_2D_FFT_Torch:
     def get_PS_op(self, *args, **kwargs):
 
         return PS_operator_2D_FFT_torch(
-            size=min(self.N0), device=self.device, dtype=self.dtype, *args, **kwargs
+            shape=self.N0, device=self.device, dtype=self.dtype, *args, **kwargs
         )
 
 
@@ -813,6 +813,77 @@ class WavelateOperator2D_FFT_torch:
         else:
             raise NotImplementedError("Unusual case, to be investigated.")
 
+    ###########################################################################
+    def standardize(self, data, inplace=False, dim=None):
+        """
+        Standardize the data by removing the mean and scaling to unit variance
+        on the last two dimensions (Nx, Ny) in real space.
+
+        Parameters
+        ----------
+        - data : STL_2D_FFT_Torch
+            Input data whose array attribute has to be standardized.
+
+        Returns
+        -------
+        - STL_2D_FFT_Torch
+            Standardized data.array.
+        """
+
+        if dim is None:
+            dim = (-2, -1)
+
+        l_data = data.copy(empty=False) if not inplace else data
+
+        mean = self.mean(l_data)  # [Nb,Nc]
+
+        # have to first center in real space
+        if data.fourier_status:
+            l_data.set_fourier_status(target_fourier_status=False, inplace=True)
+
+        l_data.array = (
+            l_data.array - mean[..., None, None]
+        )  # centering first because no remove_mean in cov
+
+        var = self.cov(l_data, l_data)
+        std = torch.sqrt(var)
+
+        l_data.array = l_data.array / std[..., None, None]
+
+        return l_data, mean, std
+
+    ###########################################################################
+    def unstandardize(self, data, mean, std, inplace=False, dim=None):
+        """
+        Unstandardize the data by scaling back using the provided mean and std.
+
+        Parameters
+        ----------
+        - data : STL_2D_FFT_Torch
+            Input data whose array attribute has to be unstandardized.
+        - mean : torch.Tensor
+            Mean used for standardization.
+        - std : torch.Tensor
+            Standard deviation used for standardization.
+
+        Returns
+        -------
+        - STL_2D_FFT_Torch
+            Unstandardized data.
+        """
+        l_data = data.copy(empty=False) if not inplace else data
+
+        # unstandardization is done in real space
+        if l_data.fourier_status:
+            l_data = l_data.set_fourier_status(
+                target_fourier_status=False, inplace=True
+            )
+
+        l_data.array = l_data.array * std[..., None, None] + mean[..., None, None]
+
+        return l_data
+
+    ###########################################################################
     def _compute_and_store_cross_cov(
         self,
         data1,
@@ -1035,85 +1106,276 @@ class PS_operator_2D_FFT_torch:
     """
 
     ###########################################################################
-    def __init__(self, size, n_bins=16, device=_DEFAULT_DEVICE, dtype=_DEFAULT_DTYPE):
-        self.size = size
+    def __init__(
+        self,
+        shape,
+        n_bins,
+        bin_edges=None,
+        device=_DEFAULT_DEVICE,
+        dtype=_DEFAULT_DTYPE,
+        get_crop_border_size_method="flexible_crop",
+    ):
+        """
+        Initialize a frequency binning object.
+
+        Args:
+            N0 (tuple): Image size (N, M)
+            n_bins (int): Number of radial frequency bins
+            device: torch device
+            dtype: torch dtype
+            get_crop_border_size_method : str ("flexible_crop" or "largest_crop")
+        """
+        self.shape = shape
         self.n_bins = n_bins
         self.device = _get_device(torch.device(device))
         self.dtype = _get_dtype(dtype=dtype, device=self.device)
+        self.get_crop_border_size_method = get_crop_border_size_method
 
-        # create frequency grid
-        freqs = (
-            torch.fft.fftfreq(size, dtype=self.dtype) * size
-        )  # [-size/2, ..., size/2]
-        u, v = torch.meshgrid(freqs, freqs, indexing="ij")
+        # --- Build frequency bin masks ---
+        self._build(bin_edges=bin_edges)
 
-        # radial frequencies
-        rho = torch.sqrt(u**2 + v**2)
-        self.rho = torch.fft.fftshift(rho).to(self.device)
+        # --- Estimate crop borders for each bin (for non-PBC data apply) ---
+        self.estimate_crop_borders()
 
-        # frequency bins
-        self.max_freq = size // 2
-        self.min_freq = 1  # to be refined if needed
-        self.bin_edges = torch.linspace(self.min_freq, self.max_freq, n_bins + 1).to(
-            device
-        )
-        self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])
+    ###########################################################################
+    def _build(self, bin_edges):
+        N, M = self.shape
 
-        # create masks for each bin
-        self.masks = []
-        for i in range(n_bins):
-            mask = (self.rho >= self.bin_edges[i]) & (self.rho < self.bin_edges[i + 1])
-            self.masks.append(mask)
+        # --- frequency grids ---
+        freq_y = torch.fft.fftshift(torch.fft.fftfreq(N, device=self.device)) * N
+        freq_x = torch.fft.fftshift(torch.fft.fftfreq(M, device=self.device)) * M
 
-    def apply(self, data):
+        FY, FX = torch.meshgrid(freq_y, freq_x, indexing="ij")
+
+        # --- radial frequency ---
+        self.radial_freq = torch.sqrt(FX**2 + FY**2).to(self.dtype)  # [N, M]
+
+        # --- frequency bin definition ---
+        if bin_edges is not None:
+            self.bin_edges = bin_edges
+
+        else:
+
+            J = int(np.log2(min(N, M))) - 2  # max spatial scale
+            self.min_freq = int(min(N, M) / (2.0**J))  # convert to cycles/image
+            self.max_freq = min(N, M) // 2  # Nyquist
+
+            # Linear regular binning
+            self.bin_edges = torch.linspace(
+                self.min_freq,
+                self.max_freq,
+                self.n_bins + 1,
+                device=self.device,
+                dtype=self.dtype,
+            )
+
+        # --- bin masks ---
+        self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])  # [n_bins]
+        sigma = 0.5 * (self.bin_edges[:-1] - self.bin_edges[1:])  # [n_bins]
+        self.bin_masks = torch.exp(
+            -0.5
+            * ((self.radial_freq[None, :, :] - self.bin_centers[:, None, None]) ** 2)
+            / (sigma[:, None, None] ** 2)
+        )  # [n_bins, N, M]
+
+    def estimate_crop_borders(self):
+
+        N, M = self.shape
+
+        # Create impulse at right border, centered vertically
+        impulse = torch.zeros((N, M), device=self.device, dtype=self.dtype)
+        y_center, x_source = N // 2, M - 1
+        impulse[y_center, x_source] = 1.0
+
+        # FFT of impulse
+        impulse_ft = torch.fft.fftshift(torch.fft.fft2(impulse))  # [N, M]
+
+        # Apply all masks in batch
+        impulse_ft = impulse_ft.unsqueeze(0)  # [1, N, M] for broadcasting
+        psfs = torch.fft.ifft2(
+            torch.fft.ifftshift(impulse_ft * self.bin_masks, dim=(-2, -1))
+        ).real  # [n_bins, N, M]
+
+        # Extract horizontal traces from pixel source
+        traces = psfs[:, y_center, math.floor(M / 2) :].abs()  # [n_bins, M//2]
+
+        # Determine border where PSF drops below threshold_percent of the trace at the source pixel (maximum value)
+        threshold_percent = 0.01
+        threshold = threshold_percent * traces[:, -1].unsqueeze(1)  # [n_bins, 1]
+        above_thresh = traces > threshold  # [n_bins, M//2]
+        self.crop_borders = math.ceil(M / 2) - (
+            above_thresh.float().argmax(dim=1) + 1
+        )  # [n_bins]
+
+    ###########################################################################
+    def _crop(self, array, border):
         """
-        Compute the power spectrum of the input data.
+        Crops an array by removing 'border' pixels from each side
+        along the last two dimensions.
+
+        Parameters
+        ----------
+        array : torch.Tensor
+            Input array to be cropped. Shape [..., N, M] or [..., n_bins, N, M].
+        border : int or torch.Tensor
+            Number of pixels to remove from each side.
+            - If int, same for all bins.
+            - If torch.Tensor of shape [n_bins], crop each bin separately.
+
+        Returns
+        -------
+        torch.Tensor or list of torch.Tensor
+            Cropped array. Returns a list if border is tensor.
+        int or torch.Tensor
+            The border used for cropping.
+        """
+        if isinstance(border, int):
+            if border == 0:
+                return array
+            return array[..., border:-border, border:-border], border
+
+        elif isinstance(border, torch.Tensor):
+            if array.ndim < 3:
+                raise ValueError(
+                    "Input tensor must have at least 3 dimensions to apply per-bin crop."
+                )
+
+            n_bins_dim = array.shape[-3]  # dimension corresponding to bins
+
+            # consistency check
+            if border.numel() != n_bins_dim:
+                raise ValueError(
+                    f"border tensor length ({border.numel()}) "
+                    f"does not match number of bins ({n_bins_dim})"
+                )
+
+            cropped_list = []
+            for n_bin in range(n_bins_dim):
+                b = border[n_bin].item()
+                slice_bin = array[..., n_bin, :, :]
+                if b > 0:
+                    slice_bin = slice_bin[..., b:-b, b:-b]
+                cropped_list.append(slice_bin)
+            return cropped_list, border
+
+        else:
+            raise ValueError("border should be either int or torch.Tensor.")
+
+    ###########################################################################
+    def apply(self, data, get_crop_border_size_method=None):
+        """
+        Compute the power spectrum of the input data array attribute.
 
         Parameters
         ----------
         - data : STL_2D_FFT_Torch
-            Input data whose array attribute power spectrum is to be computed.
+            Input data whose array attribute's power spectrum is to be computed.
 
         Returns
         -------
         torch.Tensor
-            Power spectrum values for each frequency bin.
+            Power spectrum values of shape [..., n_bins].
         """
         # consistency check
         if not isinstance(data, STL_2D_FFT_Torch):
             raise Exception("Data should be a STL_2D_FFT_Torch instance")
-        if self.size != min(data.N0):
-            raise Exception("Data size does not match operator size")
+        if self.shape != data.N0:
+            raise Exception("Data shape does not match operator shape")
+        if data.dg != 0:
+            raise Exception("Data dg must be 0 for power spectrum computation")
+        if self.device != data.device:
+            raise Exception("Data device does not match operator device")
+
+        get_crop_border_size_method = (
+            self.get_crop_border_size_method
+            if get_crop_border_size_method is None
+            else get_crop_border_size_method
+        )
 
         # Ensure data is in Fourier space
-        l_data = data.set_fourier_status(target_fourier_status=True, inplace=False)
-        l_data.array = torch.fft.fftshift(l_data.array, dim=(-2, -1))
+        l_data = data.set_fourier_status(
+            target_fourier_status=True, inplace=False
+        )  # copy of data in Fourier space
+        l_data.array = torch.fft.fftshift(l_data.array, dim=(-2, -1))  # [Nb, Nc, N, M]
 
-        power_spectrum = []
-        for mask in self.masks:
-            masked_data = l_data.array * mask
-            power = torch.mean(torch.abs(masked_data) ** 2)
-            power_spectrum.append(power.item())
+        # Put in the expected shape if not already (should be already done in ST_op apply)
+        if l_data.array.ndim == 2:
+            l_data.array = l_data.array[None, None, :, :]  # [1, 1, N, M]
+        elif l_data.array.ndim == 3:
+            l_data.array = l_data.array[None, :, :, :]  # [1, Nc, N, M]
 
-        return torch.tensor(power_spectrum, device=self.device, dtype=self.dtype)
+        # Apply bin masks
+        l_data.array = (
+            l_data.array[..., None, :, :] * self.bin_masks[None, None, :, :, :]
+        )  # [Nb, Nc, n_bins, N, M]
+
+        # Compute power spectrum
+        if l_data.pbc:
+            power_spectrum = (l_data.array.abs() ** 2).sum(dim=(-2, -1)) / (
+                l_data.array.shape[-2] * l_data.array.shape[-1]
+            )  # replace mean
+            return power_spectrum
+
+        if get_crop_border_size_method == "flexible_crop":
+            border = self.crop_borders
+        elif get_crop_border_size_method == "largest_crop":
+            border = self.crop_borders.max().item()
+        else:
+            raise ValueError(
+                f"Invalid get_crop_border_size_method: {get_crop_border_size_method}"
+            )
+
+        l_data.set_fourier_status(target_fourier_status=False, inplace=True)
+        cropped, border = self._crop(l_data.array, border=border)
+
+        # if "largest_crop"
+        if isinstance(border, int):
+            power_spectrum = (cropped.abs() ** 2).sum(dim=(-2, -1)) / (
+                cropped.shape[-2] * cropped.shape[-1]
+            )  # multiply by ratio if vectorized else mean  # [Nb, Nc, n_bin]
+
+        # if "flexible_crop"
+        elif isinstance(border, torch.Tensor):
+
+            power_spectrum = torch.empty(
+                (*cropped[0].shape[:-2], self.n_bins),
+                device=cropped[0].device,
+                dtype=cropped[0].dtype,
+            )
+            # for loop over bins due to varying crop sizes
+            for n_bin in range(self.n_bins):
+                power_spectrum[..., n_bin] = (cropped[n_bin].abs() ** 2).sum(
+                    dim=(-2, -1)
+                ) / (cropped[n_bin].shape[-2] * cropped[n_bin].shape[-1])
+
+        return power_spectrum  # [Nb, Nc, n_bin]
 
     ###########################################################################
-    def plot_PS(self, ps_tensor, label="Power Spectrum", color="b"):
+    def plot_PS(self, ps_tensor, b=0, c=0, label="Power Spectrum", color="b"):
         """
         Plot the power spectrum.
         Parameters
         ----------
-        ps_tensor: torch.Tensor
+        b : int
+            Batch index (0<=b<Nb)
+        c : int
+            Channel index (0<=c<Nc)
+        ps_tensor: torch.Tensor of shape [Nb, Nc, n_bins]
             Power spectrum values to plot
 
         Returns
         -------
         None
         """
-        # Conversion en numpy pour matplotlib
+
+        ps_values = ps_tensor[b, c, :].cpu().numpy()
         freqs = self.bin_centers.cpu().numpy()
 
-        ps_values = ps_tensor.cpu().numpy()
+        if ps_values.shape != freqs.shape:
+            raise ValueError(
+                f"ps_values shape: {ps_values.shape} and freqs shape: {freqs.shape} must have the same shape."
+            )
+
         plt.plot(freqs, ps_values, "-", marker="o", label=label, color=color)
 
         plt.yscale("log")
