@@ -23,18 +23,19 @@ jobs:
       - name: Extract changelog section
         id: changelog
         run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          echo "Tag detected: $TAG"
-          CONTENT=$(python3 -c "
-          import re
-          tag = '$TAG'
-          with open('CHANGELOG.md', 'r') as f:
-              changelog = f.read()
-          match = re.search(rf'## \[{re.escape(tag)}\].*?(?=## \[|$)', changelog, re.DOTALL)
-          if match:
-              print(match.group(0))
-          ")
-          echo "::set-output name=notes::$CONTENT"
+            TAG=${GITHUB_REF#refs/tags/}
+            echo "Tag detected: $TAG"
+            CONTENT=$(python3 -c "
+            import re
+            tag = '$TAG'
+            with open('CHANGELOG.md', 'r') as f:
+                changelog = f.read()
+            match = re.search(rf'## \[{re.escape(tag)}\].*?(?=## \[|$)', changelog, re.DOTALL)
+            if match:
+                print(match.group(0))
+            ")
+            echo "notes=$CONTENT" >> $GITHUB_OUTPUT
+
 
       # Github Release step
       - name: Create GitHub Release
