@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0] - 2026-01-27
+## [v1.0.0] - 2026-01-27
 ### Added
 - Calculation of scattering and cross-channel statistics
   - Available in real space via the `STL_2D_Kernel_Torch` class
