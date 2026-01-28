@@ -31,10 +31,11 @@ jobs:
             with open('CHANGELOG.md', 'r') as f:
                 changelog = f.read()
             match = re.search(rf'## \[{re.escape(tag)}\].*?(?=## \[|$)', changelog, re.DOTALL)
-            if match:
-                print(match.group(0))
-            ")
-            echo "notes=$CONTENT" >> $GITHUB_OUTPUT
+            {
+              echo "notes<<EOF"
+              echo "$CONTENT"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
 
 
       # Github Release step
