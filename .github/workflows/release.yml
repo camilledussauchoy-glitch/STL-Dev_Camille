@@ -25,12 +25,22 @@ jobs:
         run: |
             TAG=${GITHUB_REF#refs/tags/}
             echo "Tag detected: $TAG"
-            CONTENT=$(python3 -c "
+            CONTENT=$(python3 - << EOF
             import re
-            tag = '$TAG'
-            with open('CHANGELOG.md', 'r') as f:
+           
+            with open("CHANGELOG.md", "r") as f:
                 changelog = f.read()
-            match = re.search(rf'## \[{re.escape(tag)}\].*?(?=## \[|$)', changelog, re.DOTALL)
+                
+            pattern = rf"## \\[{re.escape(tag)}\\].*?(?=## \\[|$)"
+            match = re.search(pattern, changelog, re.DOTALL)
+            
+            if not match:
+                raise SystemExit(f"Version {tag} not found in CHANGELOG.md")
+            
+            print(match.group(0))
+            EOF
+            )
+
             {
               echo "notes<<EOF"
               echo "$CONTENT"
