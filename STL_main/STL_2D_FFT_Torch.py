@@ -1109,7 +1109,7 @@ class PS_operator_2D_FFT_torch:
     def __init__(
         self,
         shape,
-        n_bins,
+        n_bins=None,
         bin_edges=None,
         device=_DEFAULT_DEVICE,
         dtype=_DEFAULT_DTYPE,
@@ -1126,7 +1126,9 @@ class PS_operator_2D_FFT_torch:
             get_crop_border_size_method : str ("flexible_crop" or "largest_crop")
         """
         self.shape = shape
-        self.n_bins = n_bins
+        self.n_bins = (
+            int(2 ** (np.log2(min(shape)) - 4)) if n_bins is None else n_bins
+        )  # adaptive number of bins
         self.device = _get_device(torch.device(device))
         self.dtype = _get_dtype(dtype=dtype, device=self.device)
         self.get_crop_border_size_method = get_crop_border_size_method
@@ -1156,6 +1158,7 @@ class PS_operator_2D_FFT_torch:
 
         else:
 
+            # TODO: think about computing max spatial scale w.r.t pbc (-2 for periodic and -3 for non-periodic?)
             J = int(np.log2(min(N, M))) - 2  # max spatial scale
             self.min_freq = int(min(N, M) / (2.0**J))  # convert to cycles/image
             self.max_freq = min(N, M) // 2  # Nyquist
@@ -1208,58 +1211,55 @@ class PS_operator_2D_FFT_torch:
         )  # [n_bins]
 
     ###########################################################################
-    def _crop(self, array, border):
+    def buid_mask_crop(self, array, border):
         """
         Crops an array by removing 'border' pixels from each side
-        along the last two dimensions.
+        along the last two dimensions. Pads with zeros for each
+        cropped side (border may be different for each bin) to keep
+        the same output shape.
 
         Parameters
         ----------
         array : torch.Tensor
-            Input array to be cropped. Shape [..., N, M] or [..., n_bins, N, M].
-        border : int or torch.Tensor
-            Number of pixels to remove from each side.
-            - If int, same for all bins.
-            - If torch.Tensor of shape [n_bins], crop each bin separately.
+            Input array to be cropped. Shape [Nb, Nc, n_bins, N, M].
+        border : torch.Tensor
+            Number of pixels to remove from each side. Shape [n_bins].
 
         Returns
         -------
-        torch.Tensor or list of torch.Tensor
-            Cropped array. Returns a list if border is tensor.
-        int or torch.Tensor
-            The border used for cropping.
+        torch.Tensor
+            Cropped array. Shape [Nb, Nc, n_bins, N, M].
         """
-        if isinstance(border, int):
-            if border == 0:
-                return array
-            return array[..., border:-border, border:-border], border
 
-        elif isinstance(border, torch.Tensor):
-            if array.ndim < 3:
-                raise ValueError(
-                    "Input tensor must have at least 3 dimensions to apply per-bin crop."
-                )
+        if array.ndim < 3:
+            raise ValueError(
+                "Input tensor must have at least 3 dimensions to apply per-bin crop."
+            )
 
-            n_bins_dim = array.shape[-3]  # dimension corresponding to bins
+        n_bins_dim = array.shape[-3]  # dimension corresponding to bins
+        N, M = array.shape[-2], array.shape[-1]
 
-            # consistency check
-            if border.numel() != n_bins_dim:
-                raise ValueError(
-                    f"border tensor length ({border.numel()}) "
-                    f"does not match number of bins ({n_bins_dim})"
-                )
+        # consistency check
+        if border.numel() != n_bins_dim:
+            raise ValueError(
+                f"border tensor length ({border.numel()}) "
+                f"does not match number of bins ({n_bins_dim})"
+            )
 
-            cropped_list = []
-            for n_bin in range(n_bins_dim):
-                b = border[n_bin].item()
-                slice_bin = array[..., n_bin, :, :]
-                if b > 0:
-                    slice_bin = slice_bin[..., b:-b, b:-b]
-                cropped_list.append(slice_bin)
-            return cropped_list, border
+        rows = torch.arange(N, device=array.device).view(1, N, 1)
+        cols = torch.arange(M, device=array.device).view(1, 1, M)
+        border_broadcast = border.view(n_bins_dim, 1, 1)
 
-        else:
-            raise ValueError("border should be either int or torch.Tensor.")
+        mask = (
+            (rows >= border_broadcast)
+            & (rows < (N - border_broadcast))
+            & (cols >= border_broadcast)
+            & (cols < (M - border_broadcast))
+        )  # [n_bins, N, M]
+
+        mask_crop = ~mask  # invert mask to have True on cropped pixels
+
+        return mask_crop
 
     ###########################################################################
     def apply(self, data, get_crop_border_size_method=None):
@@ -1306,47 +1306,30 @@ class PS_operator_2D_FFT_torch:
 
         # Apply bin masks
         l_data.array = (
-            l_data.array[..., None, :, :] * self.bin_masks[None, None, :, :, :]
+            l_data.array[:, :, None, :, :] * self.bin_masks[None, None, :, :, :]
         )  # [Nb, Nc, n_bins, N, M]
 
         # Compute power spectrum
         if l_data.pbc:
-            power_spectrum = (l_data.array.abs() ** 2).sum(dim=(-2, -1)) / (
-                l_data.array.shape[-2] * l_data.array.shape[-1]
-            )  # replace mean
+            power_spectrum = (l_data.array.abs() ** 2).mean(dim=(-2, -1))
             return power_spectrum
 
         if get_crop_border_size_method == "flexible_crop":
             border = self.crop_borders
         elif get_crop_border_size_method == "largest_crop":
-            border = self.crop_borders.max().item()
+            border = torch.full_like(self.crop_borders, self.crop_borders.max())
         else:
             raise ValueError(
                 f"Invalid get_crop_border_size_method: {get_crop_border_size_method}"
             )
 
         l_data.set_fourier_status(target_fourier_status=False, inplace=True)
-        cropped, border = self._crop(l_data.array, border=border)
+        l_data.array = l_data.array.abs() ** 2  # [Nb, Nc, n_bins, N, M]
+        mask_crop = self.buid_mask_crop(l_data.array, border=border)  # [n_bins, N, M]
 
-        # if "largest_crop"
-        if isinstance(border, int):
-            power_spectrum = (cropped.abs() ** 2).sum(dim=(-2, -1)) / (
-                cropped.shape[-2] * cropped.shape[-1]
-            )  # multiply by ratio if vectorized else mean  # [Nb, Nc, n_bin]
-
-        # if "flexible_crop"
-        elif isinstance(border, torch.Tensor):
-
-            power_spectrum = torch.empty(
-                (*cropped[0].shape[:-2], self.n_bins),
-                device=cropped[0].device,
-                dtype=cropped[0].dtype,
-            )
-            # for loop over bins due to varying crop sizes
-            for n_bin in range(self.n_bins):
-                power_spectrum[..., n_bin] = (cropped[n_bin].abs() ** 2).sum(
-                    dim=(-2, -1)
-                ) / (cropped[n_bin].shape[-2] * cropped[n_bin].shape[-1])
+        power_spectrum = maskmean(
+            x=l_data.array, dim=(-2, -1), mask=mask_crop
+        )  # [Nb, Nc, n_bins]
 
         return power_spectrum  # [Nb, Nc, n_bin]
 
