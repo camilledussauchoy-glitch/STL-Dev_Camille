@@ -203,13 +203,18 @@ class ST_Statistics:
                 if self.S2_ref_sqrt_chan_diag is None:
                     # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
                     # and store as reference
-                    self.S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
+                    S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
+                    S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag.mean(
+                        dim=0, keepdim=True
+                    )  # mean over batch dimension
+                    self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
                 self._normalize_scatcov()
 
             if self.compute_PS:
-                PS_ref = self.PS * 1.0
-                self.PS = self.PS / PS_ref
+                PS_ref = self.PS * 1
+                PS_ref = PS_ref.mean(dim=0, keepdim=True)  # mean over batch dimension
                 self.PS_ref = PS_ref
+                self.PS = self.PS / self.PS_ref
 
             # Store normalization parameters
             self.norm = True

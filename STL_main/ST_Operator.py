@@ -96,7 +96,7 @@ class ST_Operator:
         L=None,
         SC="ScatCov",
         replace_nan_value=bk.nan,
-        norm="self",
+        norm="store_ref",
         S2_ref_sqrt_chan_diag=None,
         iso=False,
         angular_ft=False,
