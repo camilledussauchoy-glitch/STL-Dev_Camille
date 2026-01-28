@@ -27,7 +27,9 @@ jobs:
             echo "Tag detected: $TAG"
             CONTENT=$(python3 - << EOF
             import re
-           
+
+            tag = "$TAG"
+            
             with open("CHANGELOG.md", "r") as f:
                 changelog = f.read()
                 
