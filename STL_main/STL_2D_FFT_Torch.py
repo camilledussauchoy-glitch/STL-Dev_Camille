@@ -464,6 +464,12 @@ class WavelateOperator2D_FFT_torch:
         filters_bank = torch.fft.fftshift(filters_bank, dim=(-2, -1))
         filters_bank[:, :, 0, 0] = 0
 
+        # L2-normalization of each filter
+        filters_bank = (
+            filters_bank
+            / torch.norm(filters_bank.view(J, L, -1), dim=-1)[..., None, None]
+        )
+
         return filters_bank
 
     @classmethod
@@ -670,8 +676,11 @@ class WavelateOperator2D_FFT_torch:
         data = data.set_fourier_status(target_fourier_status=True, inplace=True)
 
         wavelet_j = wavelet_set_MR[j]  # [L, Njx, Njy]
+
+        prefactor = np.sqrt(data.array.shape[-2] * data.array.shape[-1])
+
         return STL_2D_FFT_Torch(
-            array=data[..., None, :, :].array * wavelet_j,
+            array=prefactor * data[..., None, :, :].array * wavelet_j,
             dg=data.dg,
             N0=data.N0,
             fourier_status=True,

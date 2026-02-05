@@ -103,6 +103,9 @@ class ST_Operator:
         scale_ft=False,
         flatten=False,
         mask_st=None,
+        dj=None,
+        harmonics_angle=None,
+        harmonics_scale=None,
         # Optional wavelet operator args
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
@@ -146,6 +149,10 @@ class ST_Operator:
         self.scale_ft = scale_ft
         self.flatten = flatten
         self.mask_st = mask_st
+
+        self.dj = dj
+        self.harmonics_angle = harmonics_angle
+        self.harmonics_scale = harmonics_scale
 
         # Power spectrum computation
         if compute_PS:
@@ -535,7 +542,7 @@ class ST_Operator:
         # Additional transform/compression
         ########################################
         # Normalisation
-        if norm is None:
+        if norm == "vanilla":
             pass
         elif norm == "store_ref":
             if SC == "ScatCov" and self.S2_ref_sqrt_chan_diag is not None:
@@ -569,10 +576,10 @@ class ST_Operator:
             data_st.to_iso()
 
         if angular_ft:
-            data_st.to_angular_ft()
+            data_st.to_angular_ft(self.harmonics_angle)
 
         if scale_ft:
-            data_st.to_scale_ft()
+            data_st.to_scale_ft(self.harmonics_scale, self.dj, self.harmonics_angle)
 
         if flatten:
             data_st.to_flatten(mask_st)

@@ -15,3 +15,8 @@
 
 ### Breaking Changes
 - N/A (first stable release)
+
+
+## [v1.1.0] - 2026-02-05
+### Added
+- Reduction of scattering cov coefficients
