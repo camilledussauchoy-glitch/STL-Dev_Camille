@@ -255,7 +255,7 @@ class STL_2D_FFT_Torch:
     ###########################################################################
     def get_wavelet_op(self, *args, **kwargs):
 
-        return WavelateOperator2D_FFT_torch(
+        return WaveletOperator2D_FFT_torch(
             N0=self.N0,
             DT=self.DT,
             device=self.device,
@@ -277,7 +277,7 @@ class STL_2D_FFT_Torch:
         )
 
 
-class WavelateOperator2D_FFT_torch:
+class WaveletOperator2D_FFT_torch:
     """
     Class whose instances correspond to a wavelet transform operator.
     The wavelet set and the operator is built during the initilization.
@@ -472,6 +472,101 @@ class WavelateOperator2D_FFT_torch:
 
         return filters_bank
 
+    @staticmethod
+    def bump_steerable_2d(omega_grid, c, L, xi0, eps=1e-12):
+        """
+        Generate a 2D bump steerable wavelet in Fourier space.
+
+        Parameters
+        ----------
+        omega_grid : torch.Tensor
+            Grid of frequencies in Fourier space, of shape [Nx, Ny, 2], where the last dimension corresponds to (omega_x, omega_y).
+        c : float
+            Normalization constant.
+        L : int
+            Number of orientations (steerability order).
+        xi0 : float
+            Center frequency xi = (xi0, 0) in Fourier space.
+        eps : float
+            Small constant to avoid division by zero in the bump window.
+
+        Returns
+        -------
+        torch.Tensor
+            A 2D bump steerable wavelet in Fourier space, of shape [Nx, Ny].
+        """
+
+        # radial part: bump window centered at xi0
+        omega_norm = torch.sqrt(omega_grid[..., 0] ** 2 + omega_grid[..., 1] ** 2)
+
+        r = abs(omega_norm - xi0) / xi0
+
+        # apply bump window over r: g(r) = exp(-r^2 / (1 - r^2)) * 1_{0<r<1}
+        r2 = r**2
+        support = (r > 0.0) & (r < 1.0)
+        denom = (1.0 - r2).clamp_min(eps)
+        bump = torch.where(support, torch.exp(-r2 / denom), torch.zeros_like(r))
+
+        # angular part: cos(theta)^(L-1) where theta is the angle of omega in Fourier space
+        theta = torch.atan2(omega_grid[..., 1], omega_grid[..., 0])
+        angular = torch.cos(theta).pow(L - 1)
+
+        return c * bump * angular
+
+    @classmethod
+    def bump_steerable_bank(cls, J, L, size):
+        """
+        Generate a bank of 2D bump steerable wavelets in Fourier space.
+
+        Parameters
+        ----------
+        J : int
+            Number of dyadic scales.
+        L : int
+            Number of orientations (steerability order).
+        size : tuple of int
+            Grid size (Nx, Ny).
+
+        Returns
+        -------
+        torch.Tensor
+            A tensor of shape [J, L, Nx, Ny]
+        """
+        Nx, Ny = size
+        filters_bank = torch.empty((J, L, Nx, Ny))
+        xi0 = min(Nx, Ny) / (2 * torch.sqrt(torch.tensor(2.0)))
+
+        # Create the frequency grid in Fourier space, with the zero frequency at (0,0)
+        omega_x = torch.fft.fftfreq(Nx) * Nx
+        omega_y = torch.fft.fftfreq(Ny) * Ny
+        Omega_x, Omega_y = torch.meshgrid(omega_x, omega_y, indexing="ij")
+        omega_grid = torch.stack((Omega_x, Omega_y), dim=-1)
+
+        # c value for Littlewood-Paley condition
+        c = ((1.29**-1) * (2 ** (L - 1)) * math.factorial(L - 1)) / math.sqrt(
+            L * math.factorial(2 * (L - 1))
+        )
+
+        for j in range(J):
+            scale_factor = 2**j
+            for l_idx, l in enumerate(range(-L // 2 + 1, L // 2 + 1)):
+                theta = math.pi * l / L
+
+                cos_theta = torch.cos(torch.tensor(theta))
+                sin_theta = torch.sin(torch.tensor(theta))
+                R = torch.tensor(
+                    [[cos_theta, -sin_theta], [sin_theta, cos_theta]],
+                    dtype=omega_grid.dtype,
+                    device=omega_grid.device,
+                )
+
+                q = (
+                    scale_factor * omega_grid @ R.T
+                )  # rotate and dilate the frequency grid
+                filters_bank[j, l_idx] = cls.bump_steerable_2d(q, c=c, L=L, xi0=xi0)
+
+        return filters_bank
+
     @classmethod
     def _get_crop_border_size_largest_scale_second_layer(cls, data, wavelet_op):
         sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
@@ -543,6 +638,8 @@ class WavelateOperator2D_FFT_torch:
 
         Parameters
         ----------
+        - Wtype : str
+            type of wavelets (e.g., "Gaussian" or "Bump-Steerable")
         - L : int
             number of orientations
         - J : int
@@ -558,7 +655,9 @@ class WavelateOperator2D_FFT_torch:
         - get_crop_border_size_method : function
             Method to compute the crop border size.
         """
-        self.WType = "Crappy"
+        self.WType = (
+            "Bump-Steerable"  # type of wavelets (e.g., "Gaussian" or "Bump-Steerable")
+        )
 
         # Main parameters
         self.N0 = N0
@@ -597,9 +696,22 @@ class WavelateOperator2D_FFT_torch:
             - j_to_dg
         """
         # Create the full resolution Wavelet set (in fourier space plus fftshifted)
-        self.wavelet_array = self.__class__.gaussian_bank(self.J, self.L, self.N0).to(
-            device=self.device, dtype=self.dtype
-        )  # [J, L, N0x, N0y]
+        if self.WType == "Gaussian":
+            self.wavelet_array = self.__class__.gaussian_bank(
+                self.J, self.L, self.N0
+            ).to(
+                device=self.device, dtype=self.dtype
+            )  # [J, L, N0x, N0y]
+
+        elif self.WType == "Bump-Steerable":
+            self.wavelet_array = self.__class__.bump_steerable_bank(
+                self.J, self.L, self.N0
+            ).to(
+                device=self.device, dtype=self.dtype
+            )  # [J, L, N0x, N0y]
+
+        else:
+            raise ValueError("Invalid WType.")
 
         # Find dg_max (with a min size of 16 = 2 * 8)
         # To avoid storing tensors at the same effective resolution

@@ -6,6 +6,7 @@ Tentative proposal by EA
 """
 
 import numpy as np
+import torch
 
 import STL_main.torch_backend as bk  # from_numpy, zeros, ones, dim, shape, nan, eye
 from STL_main.ST_Statistics import ST_Statistics
@@ -361,12 +362,16 @@ class ST_Operator:
                 bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
                 + bk.nan
             )
+            import torch
+
+            print("Initiale number of nans in S3:", torch.isnan(data_st.S3).sum())
             data_st.S4 = (
                 bk.zeros(
                     (Nb, Nc, Nc, J, J, J, L, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE
                 )
                 + bk.nan
             )
+            print("Initiale number of nans in S4:", torch.isnan(data_st.S4).sum())
             channels_with_auto_stats = compute_cross_matrix.diagonal()
             for channel in range(len(channels_with_auto_stats)):
                 if not channels_with_auto_stats[channel]:
@@ -456,6 +461,8 @@ class ST_Operator:
                 ##############################################################################
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
+                import torch
+
                 self.wavelet_op._compute_and_store_cross_cov(
                     data_l1m_l2_j2,
                     data_l1[:, :, None],
@@ -463,6 +470,8 @@ class ST_Operator:
                     compute_cross_matrix=compute_cross_matrix,
                     redundant_channels=False,
                 )  # (Nb,Nc,Nc,L2,L3)
+
+                print(torch.isnan(data_st.S3).sum())
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
 
@@ -477,6 +486,8 @@ class ST_Operator:
                         compute_cross_matrix=compute_cross_matrix,
                         redundant_channels=False,
                     )  # (Nb,Nc,Nc,L1,L2,L3)
+
+                    # print(torch.isnan(data_st.S4).sum())
 
             # Downsample at Nj3
             if j3 < J - 1:
@@ -496,6 +507,8 @@ class ST_Operator:
                         replace_nan_value=self.replace_nan_value,
                     )  # (Nb,Nc,j3+1,L,N3)
 
+        print(torch.isnan(data_st.S3).sum())
+        print(torch.isnan(data_st.S4).sum())
         """
         # Version to compute ST statistics for STL_FFT_Torch from fullJ mode 
 
