@@ -1136,7 +1136,6 @@ class PS_operator_2D_FFT_torch:
         self,
         shape,
         n_bins=None,
-        bin_edges=None,
         device=_DEFAULT_DEVICE,
         dtype=_DEFAULT_DTYPE,
         get_crop_border_size_method="flexible_crop",
@@ -1160,43 +1159,39 @@ class PS_operator_2D_FFT_torch:
         self.get_crop_border_size_method = get_crop_border_size_method
 
         # --- Build frequency bin masks ---
-        self._build(bin_edges=bin_edges)
+        self._build()
 
         # --- Estimate crop borders for each bin (for non-PBC data apply) ---
         self.estimate_crop_borders()
 
     ###########################################################################
-    def _build(self, bin_edges):
+    def _build(self):
         N, M = self.shape
 
         # --- frequency grids ---
-        freq_y = torch.fft.fftshift(torch.fft.fftfreq(N, device=self.device)) * N
-        freq_x = torch.fft.fftshift(torch.fft.fftfreq(M, device=self.device)) * M
+        freq_y = torch.fft.fftfreq(N, d=1.0, device=self.device)
+        freq_x = torch.fft.fftfreq(M, d=1.0, device=self.device)
 
         FY, FX = torch.meshgrid(freq_y, freq_x, indexing="ij")
 
         # --- radial frequency ---
-        self.radial_freq = torch.sqrt(FX**2 + FY**2).to(self.dtype)  # [N, M]
+        self.radial_freq = torch.fft.fftshift(
+            torch.sqrt(FX**2 + FY**2).to(self.dtype)
+        )  # [N, M]
 
-        # --- frequency bin definition ---
-        if bin_edges is not None:
-            self.bin_edges = bin_edges
+        # TODO: think about computing max spatial scale w.r.t pbc (-2 for periodic and -3 for non-periodic?)
+        J = int(np.log2(min(N, M))) - 2  # max spatial scale
+        self.min_freq = 1 / (2.0**J)
+        self.max_freq = 0.5  # Nyquist
 
-        else:
-
-            # TODO: think about computing max spatial scale w.r.t pbc (-2 for periodic and -3 for non-periodic?)
-            J = int(np.log2(min(N, M))) - 2  # max spatial scale
-            self.min_freq = int(min(N, M) / (2.0**J))  # convert to cycles/image
-            self.max_freq = min(N, M) // 2  # Nyquist
-
-            # Linear regular binning
-            self.bin_edges = torch.linspace(
-                self.min_freq,
-                self.max_freq,
-                self.n_bins + 1,
-                device=self.device,
-                dtype=self.dtype,
-            )
+        # Linear regular binning
+        self.bin_edges = torch.linspace(
+            self.min_freq,
+            self.max_freq,
+            self.n_bins + 1,
+            device=self.device,
+            dtype=self.dtype,
+        )
 
         # --- bin masks ---
         self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])  # [n_bins]
@@ -1213,23 +1208,24 @@ class PS_operator_2D_FFT_torch:
 
         # Create impulse at right border, centered vertically
         impulse = torch.zeros((N, M), device=self.device, dtype=self.dtype)
-        y_center, x_source = N // 2, M - 1
-        impulse[y_center, x_source] = 1.0
+        impulse[N // 2, M // 2] = 1.0
 
         # FFT of impulse
-        impulse_ft = torch.fft.fftshift(torch.fft.fft2(impulse))  # [N, M]
+        impulse_ft = torch.fft.fftshift(torch.fft.fft2(impulse, norm="ortho"))  # [N, M]
 
         # Apply all masks in batch
         impulse_ft = impulse_ft.unsqueeze(0)  # [1, N, M] for broadcasting
         psfs = torch.fft.ifft2(
-            torch.fft.ifftshift(impulse_ft * self.bin_masks, dim=(-2, -1))
+            torch.fft.ifftshift(impulse_ft * self.bin_masks, dim=(-2, -1)),
+            norm="ortho",
+            dim=(-2, -1),
         ).real  # [n_bins, N, M]
 
         # Extract horizontal traces from pixel source
-        traces = psfs[:, y_center, math.floor(M / 2) :].abs()  # [n_bins, M//2]
+        traces = psfs[:, N // 2, : M // 2].abs()  # [n_bins, M//2]
 
         # Determine border where PSF drops below threshold_percent of the trace at the source pixel (maximum value)
-        threshold_percent = 0.01
+        threshold_percent = 0.1
         threshold = threshold_percent * traces[:, -1].unsqueeze(1)  # [n_bins, 1]
         above_thresh = traces > threshold  # [n_bins, M//2]
         self.crop_borders = math.ceil(M / 2) - (
@@ -1283,9 +1279,7 @@ class PS_operator_2D_FFT_torch:
             & (cols < (M - border_broadcast))
         )  # [n_bins, N, M]
 
-        mask_crop = ~mask  # invert mask to have True on cropped pixels
-
-        return mask_crop
+        return mask
 
     ###########################################################################
     def apply(self, data, get_crop_border_size_method=None):
@@ -1356,11 +1350,13 @@ class PS_operator_2D_FFT_torch:
         l_data.set_fourier_status(target_fourier_status=False, inplace=True)
         l_data.array = l_data.array.abs() ** 2  # [Nb, Nc, n_bins, N, M]
         mask_crop = self.buid_mask_crop(l_data.array, border=border)  # [n_bins, N, M]
+        prefactor = (l_data.N0[0] * l_data.N0[1]) / (mask_crop).sum(dim=(-2, -1))
 
-        power_spectrum = maskmean(
-            x=l_data.array, dim=(-2, -1), mask=mask_crop
-        )  # [Nb, Nc, n_bins]
-
+        power_spectrum = (
+            prefactor
+            * (l_data.array * (mask_crop)).sum(dim=(-2, -1))
+            / self.bin_masks.sum(dim=(-2, -1))
+        )
         return power_spectrum  # [Nb, Nc, n_bin]
 
     ###########################################################################
