@@ -3,11 +3,13 @@ Created on Wed Nov 14:07 2018
 """
 
 import math
+from dataclasses import dataclass, field
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from STL_main.Base_DataClass import Base_DataClass
 from STL_main.ST_Operator import ST_Operator
 from STL_main.torch_backend import (
     _DEFAULT_DEVICE,
@@ -21,130 +23,29 @@ from STL_main.torch_backend import (
 
 ###############################################################################
 ###############################################################################
-class STL_2D_FFT_Torch:
+@dataclass
+class STL_2D_FFT_Torch(Base_DataClass):
     """
-    Class for 2D planar STL FFT using PyTorch
+    STL_2D_FFT_torch child class for 2D planar STL FFT using PyTorch
+
+    Inherits Base_DataClass.
+
+    See Base_DataClass for parameter descriptions.
+
+    Additional parameters
+    ---------------------
+    fourier_status : bool
+        Indicates if the data is in Fourier space (True) or real space (False).
     """
 
-    def __init__(
-        self, array, pbc=None, dg=None, N0=None, conv_history=[], fourier_status=False
-    ):
-        """
-        Initialize the STL_2D_FFT_torch class.
+    # child class constant
+    DT = "Planar2D_FFT_torch"
 
-        Parameters
-        ----------
-        array : np.ndarray or torch.Tensor
-            Input 2D array (NumPy or PyTorch tensor).
-        dg : int, optional
-            Data resolution. If None, set to 0.
-        N0 : tuple of int, optional
-            Original size of the array. Required if dg is provided.
-        pbc : bool
-            Whether the data has periodic boundary conditions or not.
-        conv_history : list of int, optional
-            History of convolutions applied to the data, storing only the scale at which each convolution was applied.
-            e.g., [j1, j2] if data has been convolved successively with wavelets at scales j1 and j2.
-        fourier_status : bool, optional
-            Indicates if the data is in Fourier space (True) or real space (False).
-        """
+    # child instance attributes
+    fourier_status: bool = False
 
-        # Main
-        self.DT = "Planar2D_FFT_torch"
-        if dg is None:
-            self.dg = 0
-            self.N0 = array.shape[-2:]
-        else:
-            self.dg = dg
-            if N0 is None:
-                raise ValueError("dg is given, N0 should not be None")
-            self.N0 = N0
-
-        self.array = self._to_array(array)
-        self.fourier_status = fourier_status
-
-        self.device = self.array.device
-        self.dtype = self.array.dtype
-
-        self.pbc = pbc
-        self.conv_history = conv_history
-
-    ###########################################################################
-    def _to_array(self, array):
-        """
-        Transform input array (NumPy or PyTorch) into a PyTorch tensor.
-
-        Parameters
-        ----------
-        array : np.ndarray or torch.Tensor
-            Input array to be converted.
-
-        Returns
-        -------
-        torch.Tensor
-            Converted PyTorch tensor.
-        """
-
-        if array is None:
-            raise ValueError("Input array should not be None")
-        else:
-            # Choose device: use GPU if available, otherwise CPU
-            # matches the input tensor dtype to the device
-            return to_torch_tensor(array)
-
-    ###########################################################################
-    def copy(self, empty=False):
-        """
-        Copy a STL_2D_FFT_Torch instance.
-        Array is put to None if empty==True.
-
-        Parameters
-        ----------
-        - empty : bool
-            If True, set array to None.
-
-        Returns
-        ----------
-        - STL_2D_FFT_Torch
-            Copied instance.
-        """
-        new = object.__new__(STL_2D_FFT_Torch)
-
-        # Copy metadata
-        for k, v in self.__dict__.items():
-            if k != "array":
-                setattr(new, k, v)
-
-        # Copy array
-        if empty:
-            new.array = None
-        else:
-            new.array = (
-                self.array.clone() if isinstance(self.array, torch.Tensor) else None
-            )
-
-        return new
-
-    ###########################################################################
-    ### Note: slicing should be on MR=True data, to be removed
-    def __getitem__(self, key):
-        """
-        To slice directly the array attribute.
-
-        Parameters
-        ----------
-        - key : int or slice
-            Slicing key.
-
-        Returns
-        -------
-        - STL_2D_FFT_Torch
-            New STL_2D_FFT_Torch instance with sliced array.
-        """
-        new = self.copy(empty=False)
-        new.array = self.array[key]
-
-        return new
+    def __post_init__(self):
+        super().__post_init__()
 
     ###########################################################################
     def modulus(self, inplace=False):
@@ -785,14 +686,12 @@ class WaveletOperator2D_FFT_torch:
                 True
         """
         # Set data in Fourier space in place
-        data = data.set_fourier_status(target_fourier_status=True, inplace=True)
+        data.set_fourier_status(target_fourier_status=True, inplace=True)
 
         wavelet_j = wavelet_set_MR[j]  # [L, Njx, Njy]
 
-        prefactor = np.sqrt(data.array.shape[-2] * data.array.shape[-1])
-
         return STL_2D_FFT_Torch(
-            array=prefactor * data[..., None, :, :].array * wavelet_j,
+            array=data[..., None, :, :].array * wavelet_j,
             dg=data.dg,
             N0=data.N0,
             fourier_status=True,
@@ -846,7 +745,7 @@ class WaveletOperator2D_FFT_torch:
             return array[..., border:-border, border:-border]
 
     ###########################################################################
-    def mean(self, data, square=False, dim=(-2, -1), **kwargs):
+    def mean(self, data, dim=(-2, -1), **kwargs):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         Parameters
@@ -862,44 +761,58 @@ class WaveletOperator2D_FFT_torch:
         if data.pbc is None and len(data.conv_history) > 0:
             raise ValueError("data.pbc should be specified (True or False).")
 
-        if data.pbc and data.fourier_status:
-            return (
-                data.array[..., 0, 0]
-                / np.sqrt(data.array.shape[-2] * data.array.shape[-1])
-            ) ** (
-                1 if not square else 2
-            )  # normalization factor suppose normalization='ortho' in fourier transforms
-        else:
-            if data.fourier_status:
-                # not supposed to happen with current ST_op apply method
-                data = data.set_fourier_status(
-                    target_fourier_status=False, inplace=True
+        if data.fourier_status:
+            if data.pbc:
+                return data.array[..., 0, 0] / np.sqrt(
+                    math.prod(data.array.shape[i] for i in dim)
                 )
+            else:
+                raise NotImplementedError(
+                    "Mean computation in Fourier space for non-periodic data is not implemented."
+                )
+
+        else:
             border = self._get_crop_border_size_method(data=data, wavelet_op=self)
             cropped_array = self._crop(array=data.array, border=border)
 
-            return maskmean(x=cropped_array, square=square, dim=dim)
+            # No prefactor needed for mean in real  space thanks to downsample function
+            return maskmean(x=cropped_array, square=False, dim=dim)
 
-    ###########################################################################
+    def square_mean(self, data, dim=(-2, -1), **kwargs):
+
+        if data.pbc is None and len(data.conv_history) > 0:
+            raise ValueError("data.pbc should be specified (True or False).")
+
+        if data.fourier_status:
+            if data.pbc:
+                return torch.mean(
+                    data.array * data.array.conj()
+                ).real  # Parseval identity
+            else:
+                raise NotImplementedError(
+                    "Square mean computation in Fourier space for non-periodic data is not implemented."
+                )
+
+        else:
+            border = self._get_crop_border_size_method(data=data, wavelet_op=self)
+            cropped_array = self._crop(
+                array=data.array * data.array.conj(), border=border
+            )
+
+            # No prefactor needed for mean in real  space thanks to downsample function
+            return maskmean(x=cropped_array, square=False, dim=dim)
+
     def cov(self, data1, data2, remove_mean=False, dim=(-2, -1), **kwargs):
-        """
-        Compute the covariance between data1 and data2 on the last two
-        dimensions (Nx, Ny).
-        """
+
         assert data1.dg == data2.dg, "data1 and data2 must have the same resolution."
 
-        if (data1.pbc is None and len(data1.conv_history) > 0) or (
-            data2.pbc is None and len(data2.conv_history) > 0
-        ):
-            raise ValueError("data.pbc should be specified (True or False).")
+        if remove_mean:
+            raise NotImplementedError("remove_mean is not yet implemented.")
 
         border = max(
             self._get_crop_border_size_method(data=data1, wavelet_op=self),
             self._get_crop_border_size_method(data=data2, wavelet_op=self),
         )
-
-        if remove_mean:
-            raise NotImplementedError("remove_mean is not yet implemented.")
 
         if data1.pbc and data1.fourier_status and data2.pbc and data2.fourier_status:
             # Parseval identity
@@ -908,19 +821,8 @@ class WaveletOperator2D_FFT_torch:
                 square=False,
                 dim=dim,
             )
-        if (
-            data1.pbc
-            and not data1.fourier_status
-            and data2.pbc
-            and not data2.fourier_status
-        ):
-            # Parseval identity
-            return maskmean(
-                x=data1.array * torch.conj(data2.array),
-                square=False,
-                dim=dim,
-            )
-        elif not data1.pbc or not data2.pbc:
+
+        else:
             data1.set_fourier_status(target_fourier_status=False, inplace=True)
             data2.set_fourier_status(target_fourier_status=False, inplace=True)
 
@@ -930,9 +832,6 @@ class WaveletOperator2D_FFT_torch:
             )
 
             return maskmean(x=cropped_array, square=False, dim=dim)
-
-        else:
-            raise NotImplementedError("Unusual case, to be investigated.")
 
     ###########################################################################
     def standardize(self, data, inplace=False, dim=None):
@@ -1152,71 +1051,77 @@ class WaveletOperator2D_FFT_torch:
     @staticmethod
     def downsample(data, dg_out, inplace=True, target_fourier_status=True, **kwargs):
         """
-        Downsample the data.array to the dg_out resolution.
-
+        Downgrade the data array to dg_out resolution by cropping in Fourier space.
 
         Parameters
         ----------
-        data : STL_2D_FFT_Torch instance
-            Data whose array attribute has to be downsampled.
+        data : STL_2D_FFT_Torch
+            Data object to be downgraded (currently at dg_in resolution).
         dg_out : int
-            Desired downsampling factor of the data.
+            Target resolution after downgrading.
         inplace : bool
-            If True, acts in-place and returns data.
-            If False, returns a new STL_2D_FFT_Torch instance.
+            If True, modifies data in-place. If False, returns a new instance.
         target_fourier_status : bool
-            Desired Fourier status of the output data.
-            As downsample is performed in Fourier space, default is True
-            to avoid a final inverse Fourier step.
+            If True, output is in Fourier space.
+            If False, output is in real space and normalized to keep the same real mean as input.
+
+        Notes
+        -----
+        - To remain consistent, if you downgrade an image that was already downgraded,
+        it is recommended to keep the output in the same domain (Fourier or real)
+        as the previous data. Otherwise, normalization issues may appear.
 
         Returns
         -------
-        STL_2D_FFT_Torch instance
-            Downsampled data at the desired downgrading factor dg_out.
+        STL_2D_FFT_Torch
+            Data downgraded to dg_out resolution.
         """
+        dg_in = data.dg
+
+        if dg_out < dg_in:
+            raise ValueError("dg_out should be greater than or equal to dg_in.")
+
+        # Prepare target data object
         data = data.copy(empty=False) if not inplace else data
 
-        if dg_out == data.dg:
-            return data
+        # Compute input and output shapes
+        in_shape = data.array.shape
+        factor = 2 ** (dg_out - dg_in)
+        out_shape = (in_shape[0] // factor, in_shape[1] // factor)
 
-        # Tuning parameter to keep the aspect ratio and a unified resolution
+        # Ensure data is in Fourier space
+        data.set_fourier_status(target_fourier_status=True, inplace=True)
+        data_fft = torch.fft.fftshift(data.array, dim=(-2, -1))
+
+        # Determine minimal crop size and keep original image ratio
         min_x, min_y = 8, 8
         if data.N0[0] > data.N0[1]:
             min_x = int(min_x * data.N0[0] / data.N0[1])
         elif data.N0[1] > data.N0[0]:
             min_y = int(min_y * data.N0[1] / data.N0[0])
 
-        # Identify the new dimensions
-        dx = int(max(min_x, data.N0[0] // 2 ** (dg_out + 1)))
-        dy = int(max(min_y, data.N0[1] // 2 ** (dg_out + 1)))
+        dx = max(min_x, out_shape[0])
+        dy = max(min_y, out_shape[1])
 
-        # Check expected current dimensions
-        dx_cur = int(max(min_x, data.N0[0] // 2 ** (data.dg + 1)))
-        dy_cur = int(max(min_y, data.N0[1] // 2 ** (data.dg + 1)))
+        # Compute crop indices
+        center_x, center_y = in_shape[0] // 2, in_shape[1] // 2
+        half_dx, half_dy = dx // 2, dy // 2
 
-        # Perform downsampling if necessary
-        if dx != dx_cur or dy != dy_cur:
+        # Crop in Fourier space
+        cropped_fft = data_fft[
+            center_x - half_dx : center_x + half_dx,
+            center_y - half_dy : center_y + half_dy,
+        ]
 
-            # set data to Fourier space
-            data = data.set_fourier_status(target_fourier_status=True, inplace=True)
-
-            # Downsampling in Fourier
-            data.array = torch.cat(
-                (
-                    torch.cat(
-                        (data.array[..., :dx, :dy], data.array[..., -dx:, :dy]), -2
-                    ),
-                    torch.cat(
-                        (data.array[..., :dx, -dy:], data.array[..., -dx:, -dy:]), -2
-                    ),
-                ),
-                -1,
-            ) * np.sqrt(dx * dy / dx_cur / dy_cur)
-
+        # Assign cropped array back, inverse shift
+        data.array = torch.fft.ifftshift(cropped_fft, dim=(-2, -1))
+        data.array *= 1 / factor
         data.dg = dg_out
-        data = data.set_fourier_status(
-            target_fourier_status=target_fourier_status, inplace=True
-        )
+
+        # Optionally convert back to real space with normalization
+        if not target_fourier_status:
+            data.set_fourier_status(target_fourier_status=False, inplace=True)
+
         return data
 
 
@@ -1432,7 +1337,11 @@ class PS_operator_2D_FFT_torch:
 
         # Compute power spectrum
         if l_data.pbc:
-            power_spectrum = (l_data.array.abs() ** 2).mean(dim=(-2, -1))
+            power_spectrum = (l_data.array.abs() ** 2).sum(
+                dim=(-2, -1)
+            ) / self.bin_masks.sum(
+                dim=(-2, -1)
+            )  # [Nb, Nc, n_bins]
             return power_spectrum
 
         if get_crop_border_size_method == "flexible_crop":
@@ -1483,8 +1392,8 @@ class PS_operator_2D_FFT_torch:
         plt.plot(freqs, ps_values, "-", marker="o", label=label, color=color)
 
         plt.yscale("log")
-        plt.xlabel("frequency(cycles per image)")
+        plt.xlabel("frequency")
         plt.ylabel("Power Spectrum")
-        plt.title("Power Spectrum Radial")
+        plt.title("Radial Power Spectrum")
         plt.grid(True, which="both", ls="-", alpha=0.5)
         plt.legend()

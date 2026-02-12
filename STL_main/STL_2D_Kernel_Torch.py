@@ -16,11 +16,13 @@ Characteristics:
     - masks are supported in convolutions
 """
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
+from STL_main.Base_DataClass import Base_DataClass
 from STL_main.ST_Operator import ST_Operator
 from STL_main.torch_backend import (
     _DEFAULT_DEVICE,
@@ -35,16 +37,17 @@ from STL_main.torch_backend import (
 
 ###############################################################################
 ###############################################################################
-class STL_2D_Kernel_Torch:
+@dataclass
+class STL_2D_Kernel_Torch(Base_DataClass):
     """
-    Class which contain the different types of data used in STL.
-    Store important parameters, such as DT, N0, and the Fourier type.
-    Also allow to convert from numpy to pytorch (or other type).
-    Allow to transfer internally these parameters.
+    STL_2D_FFT_torch child class for 2D planar STL Kernel using PyTorch
 
-    Has different standard functions as methods (
-    modulus, mean, cov, downsample)
+    Inherits Base_DataClass.
 
+    See Base_DataClass for parameter descriptions.
+
+    Additional comments
+    -------------------
     The initial resolution N0 is fixed, but the maps can be downgraded. The
     downgrading factor is the power of 2 that is used. A map of initial
     resolution N0=256 and with dg = 3 is thus at resolution 256/2^3 = 32.
@@ -81,119 +84,29 @@ class STL_2D_Kernel_Torch:
         2^dg is the downgrading level w.r.t. N0.
     - array : array (..., N)
           array(s) to store
-    - pbc : bool
-        Whether the data has periodic boundary conditions or not.
-    - conv_history : list of int, optional
-            History of convolutions applied to the data, storing only the scale at which each convolution was applied.
-            e.g., [j1, j2] if data has been convolved successively with wavelets at scales j1 and j2.
-
     """
 
-    ###########################################################################
-    def __init__(self, array, pbc=None, dg=None, N0=None, conv_history=[]):
-        """
-        Constructor, see details above. Frontend version, which assume the
-        array is at N0 resolution with dg=0.
-        """
+    # child class constant
+    DT = "Planar2D_kernel_torch"
 
-        # Check that a signle array is given (not a list of multiple resolutions)
-        if isinstance(array, list):
-            raise ValueError("Only single resolution array are accepted.")
-
-        # Main
-        self.DT = "Planar2D_kernel_torch"
-        if dg is None:
-            self.dg = 0
-            self.N0 = array.shape[-2:]
-        else:
-            self.dg = dg
-            if N0 is None:
-                raise ValueError("dg is given, N0 should not be None")
-            self.N0 = N0
-
-        self.array = self._to_array(array)
-
-        self.device = self.array.device
-        self.dtype = self.array.dtype
-
-        self.pbc = pbc
-        self.conv_history = conv_history
-
-    ###########################################################################
-    def _to_array(self, array):
-        """
-        Transform input array (NumPy or PyTorch) into a PyTorch tensor.
-        Should return None if None.
-
-        Parameters
-        ----------
-        array : np.ndarray or torch.Tensor
-            Input array to be converted.
-
-        Returns
-        -------
-        torch.Tensor
-            Converted PyTorch tensor.
-        """
-
-        if array is None:
-            return None
-        elif isinstance(array, list):
-            return array
-        else:
-            # Choose device: use GPU if available, otherwise CPU
-            # matches the input tensor dtype to the device
-            return to_torch_tensor(array)
-
-    ###########################################################################
-    def copy(self, empty=False):
-        """
-        Copy a STL_2D_Kernel_Torch instance.
-        Array is put to None if empty==True.
-
-        Parameters
-        ----------
-        - empty : bool
-            If True, set array to None.
-
-        Output
-        ----------
-        - STL_2D_Kernel_Torch
-           copy of self
-        """
-        new = object.__new__(STL_2D_Kernel_Torch)
-
-        # Copy metadata
-        for k, v in self.__dict__.items():
-            if k != "array":
-                setattr(new, k, v)
-
-        # Copy array
-        if empty:
-            new.array = None
-        else:
-            new.array = (
-                self.array.clone() if isinstance(self.array, torch.Tensor) else None
-            )
-
-        return new
-
-    ###########################################################################
-    def __getitem__(self, key):
-        """
-        To slice directly the array attribute. Produce a view of array, to
-        match with usual practices, allowing to conveniently pass only part
-        of an instance.
-        """
-        new = self.copy(empty=True)
-        new.array = self.array[key]
-
-        return new
+    def __post_init__(self):
+        super().__post_init__()
 
     ###########################################################################
     def modulus(self, inplace=False):
         """
-        Compute the modulus (absolute value) of the data.
+        Compute the modulus (absolute value) of the array attribute of data.
+
+        Parameters
+        ----------
+        - inplace : bool
+            If True, acts in-place and returns self.
+            If False, returns a new STL_2D_Kernel_Torch instance.
+
+        Returns
+        -------
+        STL_2D_Kernel_Torch
+            STL_2D_Kernel_Torch instance whose array attribute is the modulus
         """
         data = self.copy(empty=False) if not inplace else self
 

@@ -364,14 +364,13 @@ class ST_Operator:
             )
             import torch
 
-            print("Initiale number of nans in S3:", torch.isnan(data_st.S3).sum())
             data_st.S4 = (
                 bk.zeros(
                     (Nb, Nc, Nc, J, J, J, L, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE
                 )
                 + bk.nan
             )
-            print("Initiale number of nans in S4:", torch.isnan(data_st.S4).sum())
+
             channels_with_auto_stats = compute_cross_matrix.diagonal()
             for channel in range(len(channels_with_auto_stats)):
                 if not channels_with_auto_stats[channel]:
@@ -403,8 +402,13 @@ class ST_Operator:
 
         for j3 in range(J):
             # Compute first convolution and modulus
+            print(l_data.fourier_status)
             data_l1 = self.wavelet_op.apply(l_data, j=j3)  # (Nb,Nc,L,N3)
+            print(l_data.fourier_status)
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
+            print(l_data.fourier_status)
+            print(data_l1m[j3].fourier_status)
+            print()
 
             if False and self.wavelet_op.mask_full_res is not None:
                 import torch
@@ -429,7 +433,7 @@ class ST_Operator:
                     data_l1m[j3][:, channels_with_auto_stats, :, :, :],
                     square=True,
                 )
-            )  # (Nb,Nc,Nc,L3)
+            )  # (Nb, Nc, Nc, L3)
 
             # cross S2 terms (sub diagonal only)
             self.wavelet_op._compute_and_store_cross_cov(
@@ -461,7 +465,12 @@ class ST_Operator:
                 ##############################################################################
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
-                import torch
+
+                if (
+                    torch.isnan(data_l1m_l2_j2.array).sum() != 0
+                    or torch.isnan(data_l1[:, :, None].array).sum() != 0
+                ):
+                    print("NaN values")
 
                 self.wavelet_op._compute_and_store_cross_cov(
                     data_l1m_l2_j2,
@@ -470,8 +479,6 @@ class ST_Operator:
                     compute_cross_matrix=compute_cross_matrix,
                     redundant_channels=False,
                 )  # (Nb,Nc,Nc,L2,L3)
-
-                print(torch.isnan(data_st.S3).sum())
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
 
@@ -486,8 +493,6 @@ class ST_Operator:
                         compute_cross_matrix=compute_cross_matrix,
                         redundant_channels=False,
                     )  # (Nb,Nc,Nc,L1,L2,L3)
-
-                    # print(torch.isnan(data_st.S4).sum())
 
             # Downsample at Nj3
             if j3 < J - 1:
@@ -507,8 +512,6 @@ class ST_Operator:
                         replace_nan_value=self.replace_nan_value,
                     )  # (Nb,Nc,j3+1,L,N3)
 
-        print(torch.isnan(data_st.S3).sum())
-        print(torch.isnan(data_st.S4).sum())
         """
         # Version to compute ST statistics for STL_FFT_Torch from fullJ mode 
 
