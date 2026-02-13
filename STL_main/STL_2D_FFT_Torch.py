@@ -1087,7 +1087,7 @@ class WaveletOperator2D_FFT_torch:
         # Compute input and output shapes
         in_shape = data.array.shape
         factor = 2 ** (dg_out - dg_in)
-        out_shape = (in_shape[0] // factor, in_shape[1] // factor)
+        out_shape = (in_shape[-2] // factor, in_shape[-1] // factor)
 
         # Ensure data is in Fourier space
         data.set_fourier_status(target_fourier_status=True, inplace=True)
@@ -1104,11 +1104,12 @@ class WaveletOperator2D_FFT_torch:
         dy = max(min_y, out_shape[1])
 
         # Compute crop indices
-        center_x, center_y = in_shape[0] // 2, in_shape[1] // 2
+        center_x, center_y = in_shape[-2] // 2, in_shape[-1] // 2
         half_dx, half_dy = dx // 2, dy // 2
 
         # Crop in Fourier space
         cropped_fft = data_fft[
+            ...,
             center_x - half_dx : center_x + half_dx,
             center_y - half_dy : center_y + half_dy,
         ]

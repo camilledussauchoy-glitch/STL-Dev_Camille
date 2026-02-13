@@ -630,6 +630,16 @@ class WaveletOperator2Dkernel_torch:
             mask=cropped_mask,
         )
 
+    def square_mean(self, data, dim=(-2, -1), **kwargs):
+
+        if data.pbc is None and len(data.conv_history) > 0:
+            raise ValueError("data.pbc should be specified (True or False).")
+
+        border = self._get_crop_border_size_method(data=data, wavelet_op=self)
+        cropped_array = self._crop(array=data.array * data.array.conj(), border=border)
+
+        return maskmean(x=cropped_array, square=False, dim=dim)
+
     def cov(self, data1, data2, remove_mean=None, dim=None):
         """
         Compute the covariance between data1=self and data2 on the last two

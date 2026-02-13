@@ -402,13 +402,8 @@ class ST_Operator:
 
         for j3 in range(J):
             # Compute first convolution and modulus
-            print(l_data.fourier_status)
             data_l1 = self.wavelet_op.apply(l_data, j=j3)  # (Nb,Nc,L,N3)
-            print(l_data.fourier_status)
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
-            print(l_data.fourier_status)
-            print(data_l1m[j3].fourier_status)
-            print()
 
             if False and self.wavelet_op.mask_full_res is not None:
                 import torch
@@ -429,9 +424,8 @@ class ST_Operator:
             ##############################################################################
             # auto S2 terms
             data_st.S2[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
-                self.wavelet_op.mean(
-                    data_l1m[j3][:, channels_with_auto_stats, :, :, :],
-                    square=True,
+                self.wavelet_op.square_mean(
+                    data_l1m[j3][:, channels_with_auto_stats, :, :, :]
                 )
             )  # (Nb, Nc, Nc, L3)
 
