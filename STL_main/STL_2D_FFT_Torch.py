@@ -626,6 +626,7 @@ class WaveletOperator2D_FFT_torch:
             subsampled_wavelet = self.__class__.downsample(
                 data=STL_2D_FFT_Torch(array=self.wavelet_array[j], fourier_status=True),
                 dg_out=dg,
+                normalize=False,
                 inplace=True,
                 target_fourier_status=True,
             )  # [L, Njx, Njy]
@@ -1049,7 +1050,9 @@ class WaveletOperator2D_FFT_torch:
 
     ###########################################################################
     @staticmethod
-    def downsample(data, dg_out, inplace=True, target_fourier_status=True, **kwargs):
+    def downsample(
+        data, dg_out, normalize=True, inplace=True, target_fourier_status=True, **kwargs
+    ):
         """
         Downgrade the data array to dg_out resolution by cropping in Fourier space.
 
@@ -1059,6 +1062,8 @@ class WaveletOperator2D_FFT_torch:
             Data object to be downgraded (currently at dg_in resolution).
         dg_out : int
             Target resolution after downgrading.
+        normalize : bool
+            If True, normalize the output in fourier space to keep the same real mean as input.
         inplace : bool
             If True, modifies data in-place. If False, returns a new instance.
         target_fourier_status : bool
@@ -1116,7 +1121,8 @@ class WaveletOperator2D_FFT_torch:
 
         # Assign cropped array back, inverse shift
         data.array = torch.fft.ifftshift(cropped_fft, dim=(-2, -1))
-        data.array *= 1 / factor
+        if normalize:
+            data.array *= 1 / factor
         data.dg = dg_out
 
         # Optionally convert back to real space with normalization
