@@ -36,7 +36,7 @@ class Base_DataClass(ABC):
     array: (
         torch.Tensor
     )  # other types will be converted to torch.Tensor in __post_init__ if possible
-    pbc: bool
+    pbc: bool | None = None
     dg: int | None = None
     N0: tuple[int, int] | None = None
     conv_history: list[int] = field(default_factory=list)  # empty list by default
@@ -101,13 +101,20 @@ class Base_DataClass(ABC):
             If called from a subclass, returns an instance of the subclass.
         """
 
-        new = object.__new__(self.__class__)
+        new = object.__new__(self.__class__)  # create a new instance of the same class
 
+        # Copy metadata
         for k, v in self.__dict__.items():
-            if empty and k == "array":
-                setattr(new, k, None)
-            else:
-                setattr(new, k, cp.deepcopy(v))
+            if k != "array":
+                setattr(new, k, v)
+
+        # Copy array
+        if empty:
+            new.array = None
+        else:
+            new.array = (
+                self.array.clone() if isinstance(self.array, torch.Tensor) else None
+            )
 
         return new
 

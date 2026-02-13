@@ -18,6 +18,7 @@
 
 
 ## [v1.1.0] - 2026-02-13
+## [v1.1.0] - 2026-02-13
 ### Added
 - Reduction of scattering cov coefficients (thanks Sebastien!)
 - Power spectrum computation for the FFT class (works with both `pbc=True` and `pbc=False`)
