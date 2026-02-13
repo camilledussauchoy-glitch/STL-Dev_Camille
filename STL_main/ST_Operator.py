@@ -6,6 +6,7 @@ Tentative proposal by EA
 """
 
 import numpy as np
+import torch
 
 import STL_main.torch_backend as bk  # from_numpy, zeros, ones, dim, shape, nan, eye
 from STL_main.ST_Statistics import ST_Statistics
@@ -96,13 +97,16 @@ class ST_Operator:
         L=None,
         SC="ScatCov",
         replace_nan_value=bk.nan,
-        norm="self",
+        norm="store_ref",
         S2_ref_sqrt_chan_diag=None,
         iso=False,
         angular_ft=False,
         scale_ft=False,
         flatten=False,
         mask_st=None,
+        dj=None,
+        harmonics_angle=None,
+        harmonics_scale=None,
         # Optional wavelet operator args
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
@@ -146,6 +150,10 @@ class ST_Operator:
         self.scale_ft = scale_ft
         self.flatten = flatten
         self.mask_st = mask_st
+
+        self.dj = dj
+        self.harmonics_angle = harmonics_angle
+        self.harmonics_scale = harmonics_scale
 
         # Power spectrum computation
         if compute_PS:
@@ -339,13 +347,13 @@ class ST_Operator:
 
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
+        l_data = data.copy()
 
-        # Systematic statistics (data supposed to be real)
-        data_st.mean = self.wavelet_op.mean(data).real  # [Nb,Nc]
-        data_st.var = self.wavelet_op.cov(data, data).real  # [Nb,Nc]
+        data_st.mean = self.wavelet_op.mean(l_data)  # [Nb,Nc]
+        data_st.var = self.wavelet_op.cov(l_data, l_data)  # [Nb,Nc]
 
         if compute_PS:
-            data_st.PS = self.PS_op.apply(data)
+            data_st.PS = self.PS_op.apply(l_data)
 
         if SC == "ScatCov":
             data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
@@ -354,12 +362,15 @@ class ST_Operator:
                 bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
                 + bk.nan
             )
+            import torch
+
             data_st.S4 = (
                 bk.zeros(
                     (Nb, Nc, Nc, J, J, J, L, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE
                 )
                 + bk.nan
             )
+
             channels_with_auto_stats = compute_cross_matrix.diagonal()
             for channel in range(len(channels_with_auto_stats)):
                 if not channels_with_auto_stats[channel]:
@@ -387,7 +398,6 @@ class ST_Operator:
         # for FFT
 
         data_l1m = {}
-        l_data = data.copy()
         ### Higher order computation ###
 
         for j3 in range(J):
@@ -414,11 +424,10 @@ class ST_Operator:
             ##############################################################################
             # auto S2 terms
             data_st.S2[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
-                self.wavelet_op.mean(
-                    data_l1m[j3][:, channels_with_auto_stats, :, :, :],
-                    square=True,
+                self.wavelet_op.square_mean(
+                    data_l1m[j3][:, channels_with_auto_stats, :, :, :]
                 )
-            )  # (Nb,Nc,Nc,L3)
+            )  # (Nb, Nc, Nc, L3)
 
             # cross S2 terms (sub diagonal only)
             self.wavelet_op._compute_and_store_cross_cov(
@@ -429,7 +438,7 @@ class ST_Operator:
                 * (
                     ~bk.eye(Nc, dtype=bool, device=data.device)
                 ),  # remove diagonal wich was computed above with real mean square
-                redundant_channel_pairs=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
+                redundant_channels=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
             )  # (Nb,Nc,Nc,L3)
 
             data_l1m_l2 = {}
@@ -450,12 +459,19 @@ class ST_Operator:
                 ##############################################################################
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
+
+                if (
+                    torch.isnan(data_l1m_l2_j2.array).sum() != 0
+                    or torch.isnan(data_l1[:, :, None].array).sum() != 0
+                ):
+                    print("NaN values")
+
                 self.wavelet_op._compute_and_store_cross_cov(
                     data_l1m_l2_j2,
                     data_l1[:, :, None],
                     output=data_st.S3[:, :, :, j2, j3, :, :],
                     compute_cross_matrix=compute_cross_matrix,
-                    redundant_channel_pairs=False,
+                    redundant_channels=False,
                 )  # (Nb,Nc,Nc,L2,L3)
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
@@ -469,7 +485,7 @@ class ST_Operator:
                         data_l1m_l2[j2][:, :, None, :],
                         output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
                         compute_cross_matrix=compute_cross_matrix,
-                        redundant_channel_pairs=False,
+                        redundant_channels=False,
                     )  # (Nb,Nc,Nc,L1,L2,L3)
 
             # Downsample at Nj3
@@ -536,14 +552,14 @@ class ST_Operator:
         # Additional transform/compression
         ########################################
         # Normalisation
-        if norm is None:
+        if norm == "vanilla":
             pass
         elif norm == "store_ref":
             if SC == "ScatCov" and self.S2_ref_sqrt_chan_diag is not None:
                 print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
             if compute_PS and self.PS_ref is not None:
                 print("Replacing existing PS_ref in ST_Op")
-            data_st.to_norm(norm="self")
+            data_st.to_norm(norm_type="self")
             if SC == "ScatCov":
                 self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
@@ -559,21 +575,21 @@ class ST_Operator:
 
             kwargs = {}
             if SC == "ScatCov":
-                kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
+                kwargs["S2_ref_sqrt_chan_diag"] = self.S2_ref_sqrt_chan_diag
             if compute_PS:
-                kwargs["PS_ref"] = PS_ref
+                kwargs["PS_ref"] = self.PS_ref
 
             # Appel avec seulement les bons arguments
-            data_st.to_norm(norm="from_ref", **kwargs)
+            data_st.to_norm(norm_type="from_ref", **kwargs)
 
         if iso:
             data_st.to_iso()
 
         if angular_ft:
-            data_st.to_angular_ft()
+            data_st.to_angular_ft(self.harmonics_angle)
 
         if scale_ft:
-            data_st.to_scale_ft()
+            data_st.to_scale_ft(self.harmonics_scale, self.dj, self.harmonics_angle)
 
         if flatten:
             data_st.to_flatten(mask_st)

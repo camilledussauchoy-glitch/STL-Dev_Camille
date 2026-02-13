@@ -16,11 +16,13 @@ Characteristics:
     - masks are supported in convolutions
 """
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
+from STL_main.Base_DataClass import Base_DataClass
 from STL_main.ST_Operator import ST_Operator
 from STL_main.torch_backend import (
     _DEFAULT_DEVICE,
@@ -35,16 +37,17 @@ from STL_main.torch_backend import (
 
 ###############################################################################
 ###############################################################################
-class STL_2D_Kernel_Torch:
+@dataclass
+class STL_2D_Kernel_Torch(Base_DataClass):
     """
-    Class which contain the different types of data used in STL.
-    Store important parameters, such as DT, N0, and the Fourier type.
-    Also allow to convert from numpy to pytorch (or other type).
-    Allow to transfer internally these parameters.
+    STL_2D_FFT_torch child class for 2D planar STL Kernel using PyTorch
 
-    Has different standard functions as methods (
-    modulus, mean, cov, downsample)
+    Inherits Base_DataClass.
 
+    See Base_DataClass for parameter descriptions.
+
+    Additional comments
+    -------------------
     The initial resolution N0 is fixed, but the maps can be downgraded. The
     downgrading factor is the power of 2 that is used. A map of initial
     resolution N0=256 and with dg = 3 is thus at resolution 256/2^3 = 32.
@@ -81,119 +84,29 @@ class STL_2D_Kernel_Torch:
         2^dg is the downgrading level w.r.t. N0.
     - array : array (..., N)
           array(s) to store
-    - pbc : bool
-        Whether the data has periodic boundary conditions or not.
-    - conv_history : list of int, optional
-            History of convolutions applied to the data, storing only the scale at which each convolution was applied.
-            e.g., [j1, j2] if data has been convolved successively with wavelets at scales j1 and j2.
-
     """
 
-    ###########################################################################
-    def __init__(self, array, pbc=None, dg=None, N0=None, conv_history=[]):
-        """
-        Constructor, see details above. Frontend version, which assume the
-        array is at N0 resolution with dg=0.
-        """
+    # child class constant
+    DT = "Planar2D_kernel_torch"
 
-        # Check that a signle array is given (not a list of multiple resolutions)
-        if isinstance(array, list):
-            raise ValueError("Only single resolution array are accepted.")
-
-        # Main
-        self.DT = "Planar2D_kernel_torch"
-        if dg is None:
-            self.dg = 0
-            self.N0 = array.shape[-2:]
-        else:
-            self.dg = dg
-            if N0 is None:
-                raise ValueError("dg is given, N0 should not be None")
-            self.N0 = N0
-
-        self.array = self._to_array(array)
-
-        self.device = self.array.device
-        self.dtype = self.array.dtype
-
-        self.pbc = pbc
-        self.conv_history = conv_history
-
-    ###########################################################################
-    def _to_array(self, array):
-        """
-        Transform input array (NumPy or PyTorch) into a PyTorch tensor.
-        Should return None if None.
-
-        Parameters
-        ----------
-        array : np.ndarray or torch.Tensor
-            Input array to be converted.
-
-        Returns
-        -------
-        torch.Tensor
-            Converted PyTorch tensor.
-        """
-
-        if array is None:
-            return None
-        elif isinstance(array, list):
-            return array
-        else:
-            # Choose device: use GPU if available, otherwise CPU
-            # matches the input tensor dtype to the device
-            return to_torch_tensor(array)
-
-    ###########################################################################
-    def copy(self, empty=False):
-        """
-        Copy a STL_2D_Kernel_Torch instance.
-        Array is put to None if empty==True.
-
-        Parameters
-        ----------
-        - empty : bool
-            If True, set array to None.
-
-        Output
-        ----------
-        - STL_2D_Kernel_Torch
-           copy of self
-        """
-        new = object.__new__(STL_2D_Kernel_Torch)
-
-        # Copy metadata
-        for k, v in self.__dict__.items():
-            if k != "array":
-                setattr(new, k, v)
-
-        # Copy array
-        if empty:
-            new.array = None
-        else:
-            new.array = (
-                self.array.clone() if isinstance(self.array, torch.Tensor) else None
-            )
-
-        return new
-
-    ###########################################################################
-    def __getitem__(self, key):
-        """
-        To slice directly the array attribute. Produce a view of array, to
-        match with usual practices, allowing to conveniently pass only part
-        of an instance.
-        """
-        new = self.copy(empty=True)
-        new.array = self.array[key]
-
-        return new
+    def __post_init__(self):
+        super().__post_init__()
 
     ###########################################################################
     def modulus(self, inplace=False):
         """
-        Compute the modulus (absolute value) of the data.
+        Compute the modulus (absolute value) of the array attribute of data.
+
+        Parameters
+        ----------
+        - inplace : bool
+            If True, acts in-place and returns self.
+            If False, returns a new STL_2D_Kernel_Torch instance.
+
+        Returns
+        -------
+        STL_2D_Kernel_Torch
+            STL_2D_Kernel_Torch instance whose array attribute is the modulus
         """
         data = self.copy(empty=False) if not inplace else self
 
@@ -709,12 +622,23 @@ class WaveletOperator2Dkernel_torch:
         cropped_mask = self._crop(array=self._find_mask(data), border=border)
 
         dim = dim if dim is not None else (-2, -1)
+
         return maskmean(
             x=cropped_array,
             square=square,
             dim=dim,
             mask=cropped_mask,
         )
+
+    def square_mean(self, data, dim=(-2, -1), **kwargs):
+
+        if data.pbc is None and len(data.conv_history) > 0:
+            raise ValueError("data.pbc should be specified (True or False).")
+
+        border = self._get_crop_border_size_method(data=data, wavelet_op=self)
+        cropped_array = self._crop(array=data.array * data.array.conj(), border=border)
+
+        return maskmean(x=cropped_array, square=False, dim=dim)
 
     def cov(self, data1, data2, remove_mean=None, dim=None):
         """
@@ -780,13 +704,72 @@ class WaveletOperator2Dkernel_torch:
 
         return cov
 
+    ###########################################################################
+    def standardize(self, data, inplace=False, dim=None):
+        """
+        Standardize the data by removing the mean and scaling to unit variance
+        on the last two dimensions (Nx, Ny) in real space.
+
+        Parameters
+        ----------
+        - data : STL_2D_Kernel_Torch
+            Input data whose array attribute has to be standardized.
+
+        Returns
+        -------
+        - STL_2D_Kernel_Torch
+            Standardized data.
+        """
+
+        if dim is None:
+            dim = (-2, -1)
+
+        l_data = data.copy(empty=False) if not inplace else data
+
+        mean = self.mean(l_data)  # [Nb,Nc]
+        l_data.array = (
+            l_data.array - mean[..., None, None]
+        )  # centering first because no remove_mean in cov
+
+        var = self.cov(l_data, l_data)
+        std = torch.sqrt(var)
+
+        l_data.array = l_data.array / std[..., None, None]
+
+        return l_data, mean, std
+
+    ###########################################################################
+    def unstandardize(self, data, mean, std, inplace=False):
+        """
+        Unstandardize the data by scaling back using the provided mean and std.
+
+        Parameters
+        ----------
+        - data : STL_2D_Kernel_Torch
+            Input data whose array attribute has to be unstandardized.
+        - mean : torch.Tensor
+            Mean used for standardization.
+        - std : torch.Tensor
+            Standard deviation used for standardization.
+
+        Returns
+        -------
+        - STL_2D_Kernel_Torch
+            Unstandardized data.
+        """
+        l_data = data.copy(empty=False) if not inplace else data
+
+        l_data.array = l_data.array * std[..., None, None] + mean[..., None, None]
+
+        return l_data
+
     def _compute_and_store_cross_cov(
         self,
         data1,
         data2,
         output,
         compute_cross_matrix,
-        redundant_channel_pairs,
+        redundant_channels,
         remove_mean=False,
         dim=(-2, -1),
     ):
@@ -816,7 +799,7 @@ class WaveletOperator2Dkernel_torch:
                         dim=dim,
                     )
 
-                    if not redundant_channel_pairs and c1 != c2:
+                    if not redundant_channels and c1 != c2:
                         output[:, c2, c1, ...] = self.cov(
                             data1=data1[:, c2, ...],
                             data2=data2[:, c1, ...],

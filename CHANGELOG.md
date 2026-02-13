@@ -15,3 +15,17 @@
 
 ### Breaking Changes
 - N/A (first stable release)
+
+
+## [v1.1.0] - 2026-02-13
+### Added
+- Reduction of scattering cov coefficients (thanks Sebastien!)
+- Power spectrum computation for the FFT class (works with both `pbc=True` and `pbc=False`)
+- Refactor: factorization of `DataClass` into an abstract base data class
+- Steerable bump wavelets in Fourier space
+
+### Fixed
+- Normalization fix in Fourier downgrade: ensures real-space means match downsampled maps
+
+### Known limitations
+- FFT handling for `pbc=False` is not fully supported yet
