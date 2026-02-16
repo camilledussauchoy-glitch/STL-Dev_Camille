@@ -29,16 +29,16 @@ class Base_DataClass(ABC):
         Periodic boundary conditions flag. Must be specified.
     """
 
-    # common class constant(s) (shall be defined in child classes)
+    # Common class constant(s) (shall be defined in child classes)
     DT: ClassVar[str]
 
-    # common instance attributes
+    # Common instance attributes
     array: (
         torch.Tensor
-    )  # other types will be converted to torch.Tensor in __post_init__ if possible
-    pbc: bool | None = None
-    dg: int | None = None
-    N0: tuple[int, int] | None = None
+    )  # Other types will be converted to torch.Tensor in __post_init__ if possible
+    pbc: Optional[bool] = None
+    dg: Optional[int] = None
+    N0: Optional[tuple[int, int]] = None
     conv_history: list[int] = field(default_factory=list)  # empty list by default
     device: torch.device = field(init=False)
     dtype: torch.dtype = field(init=False)

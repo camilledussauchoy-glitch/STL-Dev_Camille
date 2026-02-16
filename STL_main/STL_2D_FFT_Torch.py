@@ -365,12 +365,6 @@ class WaveletOperator2D_FFT_torch:
         filters_bank = torch.fft.fftshift(filters_bank, dim=(-2, -1))
         filters_bank[:, :, 0, 0] = 0
 
-        # L2-normalization of each filter
-        filters_bank = (
-            filters_bank
-            / torch.norm(filters_bank.view(J, L, -1), dim=-1)[..., None, None]
-        )
-
         return filters_bank
 
     @staticmethod
@@ -529,6 +523,7 @@ class WaveletOperator2D_FFT_torch:
         N0,
         J=None,
         L=None,
+        WType="Gaussian",
         DT="Planar2D_FFT_torch",
         device=_DEFAULT_DEVICE,
         dtype=_DEFAULT_DTYPE,
@@ -556,9 +551,7 @@ class WaveletOperator2D_FFT_torch:
         - get_crop_border_size_method : function
             Method to compute the crop border size.
         """
-        self.WType = (
-            "Bump-Steerable"  # type of wavelets (e.g., "Gaussian" or "Bump-Steerable")
-        )
+        self.WType = WType  # type of wavelets (e.g., "Gaussian" or "Bump-Steerable")
 
         # Main parameters
         self.N0 = N0
