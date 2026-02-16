@@ -274,9 +274,6 @@ class WaveletOperator2D_FFT_torch:
 
     """
 
-    # class constants
-    SAFETY_PREFACTOR = math.sqrt(4 * math.log(10))  # point where Gaussian is ~1% of max
-
     @staticmethod
     def gaussian_2d_rotated(mu, sigma, angle, size):
         """
@@ -462,57 +459,55 @@ class WaveletOperator2D_FFT_torch:
 
         return filters_bank
 
-    @classmethod
-    def _get_crop_border_size_largest_scale_second_layer(cls, data, wavelet_op):
-        sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
+    @staticmethod
+    def _get_crop_border_size_largest_scale_second_layer(data, wavelet_op):
         if data.pbc:
             return 0
         else:
             deepest_layer = 2
             return math.ceil(
                 deepest_layer
-                * (2 ** (wavelet_op.J - 1 - data.dg))
-                * cls.SAFETY_PREFACTOR
-                / (2 * math.pi * sigma0)
+                * wavelet_op.crop_borders[-1, :]
+                .max()
+                .item()  # largest crop at full resolution
+                / (2**data.dg)  # adapt to current resolution
             )
 
-    @classmethod
-    def _get_crop_border_size_largest_scale_layer_flexible(cls, data, wavelet_op):
-        sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
+    @staticmethod
+    def _get_crop_border_size_largest_scale_layer_flexible(data, wavelet_op):
         if data.pbc or len(data.conv_history) == 0:
             return 0
         else:
             return math.ceil(
                 len(data.conv_history)
-                * (2 ** (wavelet_op.J - 1 - data.dg))
-                * cls.SAFETY_PREFACTOR
-                / (2 * math.pi * sigma0)
+                * wavelet_op.crop_borders[-1, :]
+                .max()
+                .item()  # largest crop at full resolution
+                / (2**data.dg)  # adapt to current resolution
             )
 
-    @classmethod
-    def _get_crop_border_size_fully_flexible(cls, data, wavelet_op):
-        sigma0 = min(wavelet_op.N0) / 8  # base sigma used in gaussian_bank
+    @staticmethod
+    def _get_crop_border_size_fully_flexible(data, wavelet_op):
 
         if data.pbc or len(data.conv_history) == 0:
             return 0
         elif len(data.conv_history) == 1:
             return math.ceil(
-                2 ** (data.conv_history[0] - data.dg)
-                * cls.SAFETY_PREFACTOR
-                / (2 * math.pi * sigma0)
+                wavelet_op.crop_borders[data.conv_history[0], :]
+                .max()
+                .item()  # crop at first convolution scale at full resolution
+                / (2**data.dg)  # adapt to current resolution
             )
         elif len(data.conv_history) == 2:
-            first_conv_border_downgraded = math.ceil(
-                2 ** (data.conv_history[0] - data.conv_history[-1])
-                * cls.SAFETY_PREFACTOR
-                / (2 * math.pi * sigma0)
-            )
+            first_conv_border_downgraded = wavelet_op.crop_borders[
+                data.conv_history[0], :
+            ].max().item() / (  # crop at first convolution scale at full resolution
+                2 ** data.conv_history[-1]
+            )  # adapt to second convolution scale
             return math.ceil(
-                2 ** (data.conv_history[-1] - data.dg)
-                * (
-                    first_conv_border_downgraded
-                    + cls.SAFETY_PREFACTOR / (2 * math.pi * sigma0)
-                )
+                first_conv_border_downgraded / (2 ** (data.dg - data.conv_history[-1]))
+                + wavelet_op.crop_borders[data.conv_history[1], :].max().item()
+                / (2**data.dg)
             )
 
         else:
@@ -534,7 +529,7 @@ class WaveletOperator2D_FFT_torch:
 
         Parameters
         ----------
-        - Wtype : str
+        - WType : str
             type of wavelets (e.g., "Gaussian" or "Bump-Steerable")
         - L : int
             number of orientations
@@ -555,7 +550,7 @@ class WaveletOperator2D_FFT_torch:
 
         # Main parameters
         self.N0 = N0
-        self.J = J if J is not None else int(np.log2(min(N0))) - 2
+        self.J = J if J is not None else int(np.log2(min(N0))) - 3
         self.L = L if L is not None else 4
         self.DT = DT
         self.device = _get_device(torch.device(device))
@@ -579,6 +574,8 @@ class WaveletOperator2D_FFT_torch:
         assert (
             self.mask_full_res is None
         ), "mask_full_res must be set to None for this DataType that does not handle NaNs."
+
+        self.estimate_crop_borders()
 
     ###########################################################################
     def _build(self):
@@ -626,6 +623,47 @@ class WaveletOperator2D_FFT_torch:
             assert subsampled_wavelet.fourier_status
             self.wavelet_array_MR.append(subsampled_wavelet.array)
             self.j_to_dg.append(dg)
+
+    def estimate_crop_borders(self):
+
+        N, M = self.N0
+
+        # Create impulse at the center of the image
+        impulse = torch.zeros((N, M), device=self.device, dtype=self.dtype)
+        impulse[N // 2, M // 2] = 1.0
+
+        # FFT of impulse
+        impulse_ft = torch.fft.fftshift(torch.fft.fft2(impulse, norm="ortho"))  # [N, M]
+
+        # Apply the wavelet filter at J=0 and L=0 to the impulse in Fourier Space
+        psf = torch.fft.ifft2(
+            torch.fft.ifftshift(impulse_ft * self.wavelet_array[0, 0], dim=(-2, -1)),
+            norm="ortho",
+            dim=(-2, -1),
+        )
+        if self.WType == "Bump-Steerable":
+            if self.L % 2 == 1:
+                psf = psf.real
+            else:
+                psf = psf.imag
+        elif self.WType == "Gaussian":
+            psf = psf.real
+
+        # Extract horizontal traces from pixel source
+        traces = psf[: N // 2, M // 2]  # [N//2]
+
+        # Determine border where PSF drops below threshold_percent of the vertical trace at the source pixel (maximum value)
+        threshold_percent = 0.05
+        threshold = threshold_percent * traces[-1]  # [N//2]
+        above_threshold = traces.abs() > threshold.abs()  # [N//2]
+        crop_border = math.ceil(N / 2) - (
+            above_threshold.float().argmax(dim=0) + 1
+        )  # scalar
+
+        # Expanding crop borders to all scales and orientations
+        crop_borders = crop_border * (2 ** torch.arange(self.J))
+        crop_borders = crop_borders[:, None].repeat(1, self.L)
+        self.crop_borders = crop_borders
 
     @staticmethod
     def wavelet_conv_full(data, wavelet_set):
@@ -742,12 +780,11 @@ class WaveletOperator2D_FFT_torch:
     def mean(self, data, dim=(-2, -1), **kwargs):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
+
         Parameters
         ----------
         - data : STL_2D_FFT_Torch
-            Input data. Array is in real space.
-        - square : bool
-            If True, compute the mean of the square of the data.
+            Input data. Array should in real space in ST_op workflow
         - dim : tuple of int
             Dimensions on which the mean is computed.
         """
@@ -1008,8 +1045,10 @@ class WaveletOperator2D_FFT_torch:
         """
 
         # Check coherence of input data.
-        if not isinstance(data, STL_2D_FFT_Torch):
-            raise Exception("Data should be a STL_2D_FFT_Torch instance")
+        if type(data).__name__ != "STL_2D_FFT_Torch":
+            raise Exception(
+                f"Data should be a STL_2D_FFT_Torch instance, got {type(data)}"
+            )
         if self.DT != data.DT:
             raise Exception("Data and wavelet transform should have same DT")
         if self.N0 != data.N0:
@@ -1297,8 +1336,11 @@ class PS_operator_2D_FFT_torch:
             Power spectrum values of shape [..., n_bins].
         """
         # consistency check
-        if not isinstance(data, STL_2D_FFT_Torch):
-            raise Exception("Data should be a STL_2D_FFT_Torch instance")
+        print(type(data).__name__)
+        if type(data).__name__ != "STL_2D_FFT_Torch":
+            raise Exception(
+                f"Data should be a STL_2D_FFT_Torch instance, got {type(data)}"
+            )
         if self.shape != data.N0:
             raise Exception("Data shape does not match operator shape")
         if data.dg != 0:

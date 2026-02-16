@@ -108,6 +108,7 @@ class ST_Operator:
         harmonics_angle=None,
         harmonics_scale=None,
         # Optional wavelet operator args
+        WType=None,
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
         # Power spectrum computation
@@ -122,6 +123,8 @@ class ST_Operator:
 
         # Wavelet transform and related parameters
         wavelet_op_kwargs = {}
+        if WType is not None:
+            wavelet_op_kwargs["WType"] = WType
         if downsample_nan_weight_threshold is not None:
             wavelet_op_kwargs["downsample_nan_weight_threshold"] = (
                 downsample_nan_weight_threshold
