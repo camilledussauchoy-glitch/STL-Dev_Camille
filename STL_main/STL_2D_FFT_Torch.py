@@ -395,13 +395,16 @@ class WaveletOperator2D_FFT_torch:
 
         # apply bump window over r: g(r) = exp(-r^2 / (1 - r^2)) * 1_{0<r<1}
         r2 = r**2
-        support = (r > 0.0) & (r < 1.0)
+        support_r = (r > 0.0) & (r < 1.0)
         denom = (1.0 - r2).clamp_min(eps)
-        bump = torch.where(support, torch.exp(-r2 / denom), torch.zeros_like(r))
+        bump = torch.where(support_r, torch.exp(-r2 / denom), torch.zeros_like(r))
 
         # angular part: cos(theta)^(L-1) where theta is the angle of omega in Fourier space
         theta = torch.atan2(omega_grid[..., 1], omega_grid[..., 0])
-        angular = torch.cos(theta).pow(L - 1)
+        support_theta = (theta >= -torch.pi / 2) & (theta <= torch.pi / 2)
+        angular = torch.where(
+            support_theta, torch.cos(theta).pow(L - 1), torch.zeros_like(theta)
+        )
 
         return c * bump * angular
 
@@ -430,8 +433,13 @@ class WaveletOperator2D_FFT_torch:
 
         # Create the frequency grid in Fourier space, with the zero frequency at (0,0)
         omega_x = torch.fft.fftfreq(Nx) * Nx
+        omega_x = torch.fft.fftshift(omega_x)  # Shift zero frequency to center
+
         omega_y = torch.fft.fftfreq(Ny) * Ny
-        Omega_x, Omega_y = torch.meshgrid(omega_x, omega_y, indexing="ij")
+        omega_y = torch.fft.fftshift(omega_y)  # Shift zero frequency to center
+        omega_y = torch.flip(omega_y, dims=[0])
+
+        Omega_x, Omega_y = torch.meshgrid(omega_x, omega_y, indexing="xy")
         omega_grid = torch.stack((Omega_x, Omega_y), dim=-1)
 
         # c value for Littlewood-Paley condition
@@ -441,7 +449,7 @@ class WaveletOperator2D_FFT_torch:
 
         for j in range(J):
             scale_factor = 2**j
-            for l_idx, l in enumerate(range(-L // 2 + 1, L // 2 + 1)):
+            for l_idx, l in enumerate(range(L)):
                 theta = math.pi * l / L
 
                 cos_theta = torch.cos(torch.tensor(theta))
@@ -453,9 +461,11 @@ class WaveletOperator2D_FFT_torch:
                 )
 
                 q = (
-                    scale_factor * omega_grid @ R.T
+                    scale_factor * omega_grid @ R
                 )  # rotate and dilate the frequency grid
-                filters_bank[j, l_idx] = cls.bump_steerable_2d(q, c=c, L=L, xi0=xi0)
+                filters_bank[j, l_idx] = torch.fft.fftshift(
+                    cls.bump_steerable_2d(q, c=c, L=L, xi0=xi0)
+                )
 
         return filters_bank
 
@@ -550,7 +560,7 @@ class WaveletOperator2D_FFT_torch:
 
         # Main parameters
         self.N0 = N0
-        self.J = J if J is not None else int(np.log2(min(N0))) - 3
+        self.J = J if J is not None else int(np.log2(min(N0))) - 2
         self.L = L if L is not None else 4
         self.DT = DT
         self.device = _get_device(torch.device(device))
@@ -635,33 +645,28 @@ class WaveletOperator2D_FFT_torch:
         # FFT of impulse
         impulse_ft = torch.fft.fftshift(torch.fft.fft2(impulse, norm="ortho"))  # [N, M]
 
-        # Apply the wavelet filter at J=0 and L=0 to the impulse in Fourier Space
+        # Apply the wavelet filter at j=J and L=0 to the impulse in Fourier Space (look at the impulse response along this direction)
         psf = torch.fft.ifft2(
-            torch.fft.ifftshift(impulse_ft * self.wavelet_array[0, 0], dim=(-2, -1)),
+            torch.fft.ifftshift(impulse_ft * self.wavelet_array[-1, 0], dim=(-2, -1)),
             norm="ortho",
             dim=(-2, -1),
-        )
-        if self.WType == "Bump-Steerable":
-            if self.L % 2 == 1:
-                psf = psf.real
-            else:
-                psf = psf.imag
-        elif self.WType == "Gaussian":
-            psf = psf.real
+        ).abs()  # [N, M]
 
         # Extract horizontal traces from pixel source
-        traces = psf[: N // 2, M // 2]  # [N//2]
+        traces = psf[N // 2, : M // 2]  # [M//2]
 
         # Determine border where PSF drops below threshold_percent of the vertical trace at the source pixel (maximum value)
-        threshold_percent = 0.05
+        threshold_percent = 0.1
         threshold = threshold_percent * traces[-1]  # [N//2]
-        above_threshold = traces.abs() > threshold.abs()  # [N//2]
+        above_threshold = traces > threshold  # [N//2]
         crop_border = math.ceil(N / 2) - (
             above_threshold.float().argmax(dim=0) + 1
         )  # scalar
 
         # Expanding crop borders to all scales and orientations
-        crop_borders = crop_border * (2 ** torch.arange(self.J))
+        crop_borders = torch.tensor(
+            [math.ceil(crop_border / (2**j)) for j in range(self.J - 1, -1, -1)]
+        )
         crop_borders = crop_borders[:, None].repeat(1, self.L)
         self.crop_borders = crop_borders
 
@@ -805,6 +810,7 @@ class WaveletOperator2D_FFT_torch:
         else:
             border = self._get_crop_border_size_method(data=data, wavelet_op=self)
             cropped_array = self._crop(array=data.array, border=border)
+            # print(border, data.array.shape, cropped_array.shape)
 
             # No prefactor needed for mean in real  space thanks to downsample function
             return maskmean(x=cropped_array, square=False, dim=dim)
