@@ -96,6 +96,7 @@ class ST_Operator:
         L=None,
         SC="ScatCov",
         replace_nan_value=bk.nan,
+        mask_full_res=None,
         norm="self",
         S2_ref_sqrt_chan_diag=None,
         iso=False,
@@ -109,6 +110,8 @@ class ST_Operator:
         # Power spectrum computation
         compute_PS=False,
         PS_ref=None,
+        mean_ref=None,
+        var_ref=None,
     ):
         """
         Constructor, see details above.
@@ -118,6 +121,8 @@ class ST_Operator:
 
         # Wavelet transform and related parameters
         wavelet_op_kwargs = {}
+        if mask_full_res is not None:
+            wavelet_op_kwargs["mask_full_res"] = mask_full_res
         if downsample_nan_weight_threshold is not None:
             wavelet_op_kwargs["downsample_nan_weight_threshold"] = (
                 downsample_nan_weight_threshold
@@ -141,6 +146,8 @@ class ST_Operator:
         # Additional transform/compression related parameters
         self.norm = norm
         self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
+        self.mean_ref = mean_ref
+        self.var_ref = var_ref
         self.iso = iso
         self.angular_ft = angular_ft
         self.scale_ft = scale_ft
@@ -202,6 +209,8 @@ class ST_Operator:
         mask_st=None,
         compute_PS=None,
         PS_ref=None,
+        mean_ref=None,
+        var_ref=None,
         compute_cross_matrix=None,
     ):
         """
@@ -305,6 +314,9 @@ class ST_Operator:
         compute_PS = self.compute_PS if compute_PS is None else compute_PS
         PS_ref = self.PS_ref if PS_ref is None else PS_ref
 
+        mean_ref = self.mean_ref if mean_ref is None else mean_ref
+        var_ref = self.var_ref if var_ref is None else var_ref
+
         # Put in torch or relevant bk
         if type(data.array) == np.ndarray:
             data.array = bk.from_numpy(data.array)
@@ -341,6 +353,9 @@ class ST_Operator:
         # Add readability w.r.t. having it in the ST statistics initilization
 
         # Systematic statistics (data supposed to be real)
+        assert (
+            data.array.is_complex() == False
+        ), "Data should be real for now, otherwise mean and var computation should be adapted"
         data_st.mean = self.wavelet_op.mean(data).real  # [Nb,Nc]
         data_st.var = self.wavelet_op.cov(data, data).real  # [Nb,Nc]
 
@@ -539,32 +554,67 @@ class ST_Operator:
         if norm is None:
             pass
         elif norm == "store_ref":
+            assert (
+                mean_ref is None
+            ), "mean_ref should not be provided when norm='store_ref'"
+            assert (
+                var_ref is None
+            ), "var_ref should not be provided when norm='store_ref'"
+            if SC == "ScatCov":
+                assert (
+                    S2_ref_sqrt_chan_diag is None
+                ), "S2_ref_sqrt_chan_diag should not be provided when norm='store_ref'"
+            if compute_PS:
+                assert (
+                    PS_ref is None
+                ), "PS_ref should not be provided when norm='store_ref'"
+
+            if self.mean_ref is not None:
+                print("Replacing existing mean_ref in ST_Op")
+            if self.var_ref is not None:
+                print("Replacing existing var_ref in ST_Op")
             if SC == "ScatCov" and self.S2_ref_sqrt_chan_diag is not None:
                 print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
             if compute_PS and self.PS_ref is not None:
                 print("Replacing existing PS_ref in ST_Op")
-            data_st.to_norm(norm="self")
+
+            data_st.to_norm(norm_type="self")
+
+            self.mean_ref = data_st.mean_ref
+            self.var_ref = data_st.var_ref
             if SC == "ScatCov":
                 self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
                 self.PS_ref = data_st.PS_ref
 
         elif norm == "load_ref":
+            if mean_ref is None:
+                raise Exception(
+                    "mean_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
+                )
+            if var_ref is None:
+                raise Exception(
+                    "var_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
+                )
             if SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
                 raise Exception(
-                    "S2_ref_sqrt_chan_diag should be stored in the ST_Operator"
+                    "S2_ref_sqrt_chan_diag should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
                 )
             if compute_PS and PS_ref is None:
-                raise Exception("PS_ref should be stored in the ST_Operator")
+                raise Exception(
+                    "PS_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
+                )
 
             kwargs = {}
+            kwargs["mean_ref"] = mean_ref
+            kwargs["var_ref"] = var_ref
             if SC == "ScatCov":
                 kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
             if compute_PS:
                 kwargs["PS_ref"] = PS_ref
 
             # Appel avec seulement les bons arguments
-            data_st.to_norm(norm="from_ref", **kwargs)
+            data_st.to_norm(norm_type="from_ref", **kwargs)
 
         if iso:
             data_st.to_iso()

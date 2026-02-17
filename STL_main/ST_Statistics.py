@@ -184,6 +184,10 @@ class ST_Statistics:
         - PS_ref : array
             if self.PS = True
             array of reference Power Spectrum coefficients if "from_ref"
+        - mean_ref : array
+            array of reference mean if "from_ref"
+        - var_ref : array
+            array of reference variance if "from_ref"
 
         """
 
@@ -199,68 +203,48 @@ class ST_Statistics:
         if norm_type is None:
             pass
 
+        # Verifications
+        if self.norm:
+            raise Exception("ST statistics are already normalized")
+
         # Store_ref normalization
         elif norm_type == "self":
-            # Verifications
-            if self.norm:
-                raise Exception("ST statistics are already normalized")
 
             mean_ref = self.mean * 1.0
-            self.mean = self.mean / mean_ref
-            self.mean_ref = mean_ref
-
             var_ref = self.var * 1.0
-            self.var = self.var / var_ref
-            self.var_ref = var_ref
 
-            # Perform normalization and store reference
             if self.SC == "ScatCov":
                 if self.S2_ref_sqrt_chan_diag is None:
                     # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
                     # and store as reference
                     self.S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
-                self._normalize_scatcov()
 
             if self.compute_PS:
                 PS_ref = self.PS * 1.0
-                self.PS = self.PS / PS_ref
-                self.PS_ref = PS_ref
-
-            # Store normalization parameters
-            self.norm = True
 
         # Load_ref normalization
         elif norm_type == "from_ref":
-            # Verifications
-            if self.norm:
-                raise Exception("ST statistics are already normalized")
-            if mean_ref is None:
-                raise Exception("mean_ref should be given")
-            if var_ref is None:
-                raise Exception("var_ref should be given")
-            if self.SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
-                raise Exception("S2_ref_sqrt_chan_diag should be given")
-            if self.compute_PS and PS_ref is None:
-                raise Exception("PS_ref should be given")
-
-            # Perform normalization and store reference
-            self.mean = self.mean / mean_ref
-            self.mean_ref = mean_ref
-
-            self.var = self.var / var_ref
-            self.var_ref = var_ref
 
             if self.SC == "ScatCov":
                 # store as reference
                 self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
-                self._normalize_scatcov()
 
-            if self.compute_PS:
-                self.PS = self.PS / PS_ref
-                self.PS_ref = PS_ref
+        # Perform normalization and store reference
+        self.mean = self.mean / mean_ref
+        self.mean_ref = mean_ref
 
-            # Store normalization parameters
-            self.norm = True
+        self.var = self.var / var_ref
+        self.var_ref = var_ref
+
+        if self.SC == "ScatCov":
+            self._normalize_scatcov()
+
+        if self.compute_PS:
+            self.PS = self.PS / PS_ref
+            self.PS_ref = PS_ref
+
+        # Store normalization parameters
+        self.norm = True
 
         return self
 
@@ -369,7 +353,7 @@ class ST_Statistics:
 
         """
 
-        # Collect all S1,S2,S3,S4 into a list
+        # Collect all stats (mean, var, PS, S1, S2, S3, S4) into a list
         stats = [self.mean, self.var]
 
         if self.SC == "ScatCov":
