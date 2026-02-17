@@ -462,13 +462,6 @@ class ST_Operator:
                 ##############################################################################
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
-
-                if (
-                    torch.isnan(data_l1m_l2_j2.array).sum() != 0
-                    or torch.isnan(data_l1[:, :, None].array).sum() != 0
-                ):
-                    print("NaN values")
-
                 self.wavelet_op._compute_and_store_cross_cov(
                     data_l1m_l2_j2,
                     data_l1[:, :, None],

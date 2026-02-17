@@ -637,8 +637,9 @@ class WaveletOperator2Dkernel_torch:
 
         border = self._get_crop_border_size_method(data=data, wavelet_op=self)
         cropped_array = self._crop(array=data.array * data.array.conj(), border=border)
+        cropped_mask = self._crop(array=self._find_mask(data), border=border)
 
-        return maskmean(x=cropped_array, square=False, dim=dim)
+        return maskmean(x=cropped_array, square=False, dim=dim, mask=cropped_mask)
 
     def cov(self, data1, data2, remove_mean=None, dim=None):
         """
@@ -826,7 +827,6 @@ class WaveletOperator2Dkernel_torch:
         """
         # Check coherence of input data.
         if not isinstance(data, STL_2D_Kernel_Torch):
-            print(data.__class__)
             raise Exception("Data should be a STL_2D_Kernel_Torch instance")
         if self.DT != data.DT:
             raise Exception("Data and wavelet transform should have same DT")
