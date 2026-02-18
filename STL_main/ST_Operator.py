@@ -364,8 +364,8 @@ class ST_Operator:
 
         if SC == "ScatCov":
             #            data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
-            data_st.S1 = bk.zeros((Nb, Nc, Nc, J, L)) + bk.nan
-            data_st.S2 = bk.zeros((Nb, Nc, Nc, J, L)) + bk.nan
+            data_st.S1 = bk.zeros((Nb, Nc, Nc, J, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
+            data_st.S2 = bk.zeros((Nb, Nc, Nc, J, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
             data_st.S3 = (
                 bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
                 + bk.nan
@@ -429,7 +429,7 @@ class ST_Operator:
             data_st.S1[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
                 self.wavelet_op.mean(
                     data_l1m[j3][:, channels_with_auto_stats, :, :, :],
-                )
+                ).to(dtype=bk._DEFAULT_COMPLEX_DTYPE)
             )  # (Nb,Nc,Nc,L3)
 
             # cross S1 terms (sub diagonal only)
@@ -462,7 +462,7 @@ class ST_Operator:
                 self.wavelet_op.mean(
                     data_l1m[j3][:, channels_with_auto_stats, :, :, :],
                     square=True,
-                )
+                ).to(dtype=bk._DEFAULT_COMPLEX_DTYPE)
             )  # (Nb,Nc,Nc,L3)
 
             # cross S2 terms (sub diagonal only)
