@@ -149,7 +149,11 @@ class ST_Statistics:
         using self.S2_ref_sqrt_chan_diag
         """
 
-        self.S1 = self.S1 / self.S2_ref_sqrt_chan_diag  # [Nb,Nc,J1,L1]
+        #        self.S1 = self.S1 / self.S2_ref_sqrt_chan_diag  # [Nb,Nc,J1,L1]
+        self.S1 = self.S1 / (
+            self.S2_ref_sqrt_chan_diag[:, :, None]
+            * self.S2_ref_sqrt_chan_diag[:, None, :]
+        )  # [Nb,Nc,Nc,J1,L1]
         self.S2 = self.S2 / (
             self.S2_ref_sqrt_chan_diag[:, :, None]
             * self.S2_ref_sqrt_chan_diag[:, None, :]
@@ -275,7 +279,8 @@ class ST_Statistics:
             # S1 and S2
             # self.S1 = bk.mean(self.S1.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
             # self.S1 = bk.mean(self.S2.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
-            self.S1 = bk.mean(self.S1, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            #            self.S1 = bk.mean(self.S1, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            self.S1 = bk.mean(self.S1, -1)  # (Nb,Nc,Nc,J,L) -> (Nb,Nc,Nc,J)
             self.S2 = bk.mean(self.S2, -1)  # (Nb,Nc,Nc,J,L) -> (Nb,Nc,Nc,J)
 
             # S3 and S4

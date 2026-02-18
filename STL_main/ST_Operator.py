@@ -363,7 +363,8 @@ class ST_Operator:
             data_st.PS = self.PS_op.apply(data)
 
         if SC == "ScatCov":
-            data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
+            #            data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
+            data_st.S1 = bk.zeros((Nb, Nc, Nc, J, L)) + bk.nan
             data_st.S2 = bk.zeros((Nb, Nc, Nc, J, L)) + bk.nan
             data_st.S3 = (
                 bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
@@ -420,9 +421,38 @@ class ST_Operator:
             ##############################################################################
             ########################## S1(j3) = Mean(|I*psi3|) ###########################
             ##############################################################################
-            data_st.S1[:, channels_with_auto_stats, j3, :] = self.wavelet_op.mean(
-                data_l1m[j3][:, channels_with_auto_stats, :, :],
-            )  # (Nb,Nc,L3)
+            #            data_st.S1[:, channels_with_auto_stats, j3, :] = self.wavelet_op.mean(
+            #                data_l1m[j3][:, channels_with_auto_stats, :, :],
+            #            )  # (Nb,Nc,L3)
+
+            # auto S1 terms
+            data_st.S1[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
+                self.wavelet_op.mean(
+                    data_l1m[j3][:, channels_with_auto_stats, :, :, :],
+                )
+            )  # (Nb,Nc,Nc,L3)
+
+            # cross S1 terms (sub diagonal only)
+            if (
+                compute_cross_matrix * (~bk.eye(Nc, dtype=bool, device=data.device))
+            ).any():
+                data_l1_modulus_square_rooted = data_l1.copy(empty=True)
+                data_l1_modulus_square_rooted.array = data_l1.array * (
+                    data_l1m[j3].array + 1e-8
+                ) ** (
+                    -0.5
+                )  # (Nb,Nc,L,N3)
+
+                self.wavelet_op._compute_and_store_cross_cov(
+                    data_l1_modulus_square_rooted,
+                    data_l1_modulus_square_rooted,
+                    output=data_st.S1[:, :, :, j3, :],
+                    compute_cross_matrix=compute_cross_matrix
+                    * (
+                        ~bk.eye(Nc, dtype=bool, device=data.device)
+                    ),  # remove diagonal wich was computed above with real mean square
+                    redundant_channel_pairs=True,  # S1(c1,c2) and S1(c2,c1) are conjugates
+                )  # (Nb,Nc,Nc,L3)
 
             ##############################################################################
             ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
@@ -436,16 +466,19 @@ class ST_Operator:
             )  # (Nb,Nc,Nc,L3)
 
             # cross S2 terms (sub diagonal only)
-            self.wavelet_op._compute_and_store_cross_cov(
-                data_l1,
-                data_l1,
-                output=data_st.S2[:, :, :, j3, :],
-                compute_cross_matrix=compute_cross_matrix
-                * (
-                    ~bk.eye(Nc, dtype=bool, device=data.device)
-                ),  # remove diagonal wich was computed above with real mean square
-                redundant_channel_pairs=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
-            )  # (Nb,Nc,Nc,L3)
+            if (
+                compute_cross_matrix * (~bk.eye(Nc, dtype=bool, device=data.device))
+            ).any():
+                self.wavelet_op._compute_and_store_cross_cov(
+                    data_l1,
+                    data_l1,
+                    output=data_st.S2[:, :, :, j3, :],
+                    compute_cross_matrix=compute_cross_matrix
+                    * (
+                        ~bk.eye(Nc, dtype=bool, device=data.device)
+                    ),  # remove diagonal wich was computed above with real mean square
+                    redundant_channel_pairs=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
+                )  # (Nb,Nc,Nc,L3)
 
             data_l1m_l2 = {}
             for j2 in range(j3 + 1):
