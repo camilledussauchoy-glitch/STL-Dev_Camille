@@ -29,3 +29,9 @@
 
 ### Known limitations
 - FFT handling for `pbc=False` is not fully supported yet
+
+
+## [v1.2.0] - 2026-02-21
+### Added
+- Sihao reduced scattering statistics (one fewer convolution for S3 and S4). Enable this feature by setting the `has_fewer_convolutions` argument in the `st_operator` constructor.
+- Support for `pbc=False` in FFT, regardless of the defined wavelet type (`gaussian`, `bump_steerable`, etc.).
