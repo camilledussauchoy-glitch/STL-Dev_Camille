@@ -763,7 +763,7 @@ class WaveletOperator2D_FFT_torch:
             if False:  # conservative handling of borders larger than array
                 assert array.shape[-2] > 2 * border
                 assert array.shape[-1] > 2 * border
-            elif False:  # flexible handling of borders larger than array
+            elif True:  # flexible handling of borders larger than array
                 if min(array.shape[-2:]) <= 2 * border:
                     if not getattr(
                         self, "_border_warning_raised", False
@@ -954,6 +954,7 @@ class WaveletOperator2D_FFT_torch:
         assert (
             data1.array.shape[1] == data2.array.shape[1]
         ), "data1 and data2 arrays must have the same number of channels."
+
         assert (
             data1.array.ndim == data2.array.ndim
         ), "data1 and data2 arrays must have the same number of dimensions."
