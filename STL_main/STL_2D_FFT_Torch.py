@@ -528,7 +528,7 @@ class WaveletOperator2D_FFT_torch:
         N0,
         J=None,
         L=None,
-        WType="Gaussian",
+        WType="Bump-Steerable",
         DT="Planar2D_FFT_torch",
         device=_DEFAULT_DEVICE,
         dtype=_DEFAULT_DTYPE,
