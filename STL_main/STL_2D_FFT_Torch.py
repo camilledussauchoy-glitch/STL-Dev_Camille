@@ -1343,7 +1343,6 @@ class PS_operator_2D_FFT_torch:
             Power spectrum values of shape [..., n_bins].
         """
         # consistency check
-        print(type(data).__name__)
         if type(data).__name__ != "STL_2D_FFT_Torch":
             raise Exception(
                 f"Data should be a STL_2D_FFT_Torch instance, got {type(data)}"
