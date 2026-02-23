@@ -439,7 +439,7 @@ class WaveletOperator2D_FFT_torch:
         omega_y = torch.fft.fftshift(omega_y)  # Shift zero frequency to center
         omega_y = torch.flip(omega_y, dims=[0])
 
-        Omega_x, Omega_y = torch.meshgrid(omega_x, omega_y, indexing="xy")
+        Omega_x, Omega_y = torch.meshgrid(omega_x, omega_y, indexing="ij")
         omega_grid = torch.stack((Omega_x, Omega_y), dim=-1)
 
         # c value for Littlewood-Paley condition
