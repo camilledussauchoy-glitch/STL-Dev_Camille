@@ -633,7 +633,6 @@ class WaveletOperator2Dkernel_torch:
 
         return maskmean(
             x=cropped_array,
-            square=square,
             dim=dim,
             mask=cropped_mask,
         )
@@ -647,7 +646,7 @@ class WaveletOperator2Dkernel_torch:
         cropped_array = self._crop(array=data.array * data.array.conj(), border=border)
         cropped_mask = self._crop(array=self._find_mask(data), border=border)
 
-        return maskmean(x=cropped_array, square=False, dim=dim, mask=cropped_mask)
+        return maskmean(x=cropped_array, dim=dim, mask=cropped_mask)
 
     def cov(self, data1, data2, remove_mean=None, dim=None):
         """
@@ -706,7 +705,6 @@ class WaveletOperator2Dkernel_torch:
         cropped_array = self._crop(array=x_c * torch.conj(y_c), border=border)
         cov = maskmean(
             x=cropped_array,
-            square=False,
             dim=dim,
             mask=self._crop(array=mask, border=border),
         )

@@ -810,10 +810,9 @@ class WaveletOperator2D_FFT_torch:
         else:
             border = self._get_crop_border_size_method(data=data, wavelet_op=self)
             cropped_array = self._crop(array=data.array, border=border)
-            # print(border, data.array.shape, cropped_array.shape)
 
             # No prefactor needed for mean in real  space thanks to downsample function
-            return maskmean(x=cropped_array, square=False, dim=dim)
+            return maskmean(x=cropped_array, dim=dim)
 
     def square_mean(self, data, dim=(-2, -1), **kwargs):
 
@@ -837,7 +836,7 @@ class WaveletOperator2D_FFT_torch:
             )
 
             # No prefactor needed for mean in real  space thanks to downsample function
-            return maskmean(x=cropped_array, square=False, dim=dim)
+            return maskmean(x=cropped_array, dim=dim)
 
     def cov(self, data1, data2, remove_mean=False, dim=(-2, -1), **kwargs):
 
@@ -855,7 +854,6 @@ class WaveletOperator2D_FFT_torch:
             # Parseval identity
             return maskmean(
                 x=data1.array * torch.conj(data2.array),
-                square=False,
                 dim=dim,
             )
 
@@ -868,7 +866,7 @@ class WaveletOperator2D_FFT_torch:
                 border=border,
             )
 
-            return maskmean(x=cropped_array, square=False, dim=dim)
+            return maskmean(x=cropped_array, dim=dim)
 
     ###########################################################################
     def standardize(self, data, inplace=False, dim=None):
