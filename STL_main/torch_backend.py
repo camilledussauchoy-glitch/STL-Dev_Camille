@@ -196,7 +196,7 @@ def eye(n, device=None, dtype=None):
     return torch.eye(n, dtype=fix_dtype, device=device)
 
 
-def maskmean(x, square=False, dim=(-2, -1), mask=None):
+def maskmean(x, dim=(-2, -1), mask=None):
     """
     Compute the mean of x along given dims, optionally masked.
     If mask is given, assumes mask.shape == x.shape[-mask.ndim:],
@@ -211,10 +211,7 @@ def maskmean(x, square=False, dim=(-2, -1), mask=None):
         Tensor with the mean
     """
     if mask is None:
-        array_to_average = x if not square else x**2
-        return (
-            array_to_average.mean() if dim is None else array_to_average.mean(dim=dim)
-        )
+        return x.mean() if dim is None else x.mean(dim=dim)
     else:
         assert dim == (-2, -1)
         assert (
@@ -222,9 +219,6 @@ def maskmean(x, square=False, dim=(-2, -1), mask=None):
         )  # check mask shape matches x shape on masked dims
         # assert x[..., ~mask].isnan().sum() == 0 ############################################### sanity check to remove in the future
         x_masked = torch.where(~mask, x, 0.0)
-        x_masked = (
-            x_masked if not square else x_masked**2
-        )  # computes squares after masking is better for backpropagation
         count = (
             (~mask).sum() if dim is None else (~mask).sum(dim=dim)
         )  ########################################## can be improved in the future by normalizing masks once for all beforehand

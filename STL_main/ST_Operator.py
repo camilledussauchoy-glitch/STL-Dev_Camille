@@ -58,6 +58,8 @@ class ST_Operator:
     # Scattering Transform
     - SC : str
         type of ST coefficients ("ScatCov", "WPH")
+    - has_fewer_convolutions : bool
+        For "ScatCov" type, whether the S3 and S4 coefficients are computed with one convolution less (Sihao version)
 
     # Additional transform/compression
     - norm : str
@@ -96,6 +98,7 @@ class ST_Operator:
         J=None,
         L=None,
         SC="ScatCov",
+        has_fewer_convolutions=False,
         replace_nan_value=bk.nan,
         norm="store_ref",
         S2_ref_sqrt_chan_diag=None,
@@ -108,6 +111,7 @@ class ST_Operator:
         harmonics_angle=None,
         harmonics_scale=None,
         # Optional wavelet operator args
+        WType=None,
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
         # Power spectrum computation
@@ -122,6 +126,8 @@ class ST_Operator:
 
         # Wavelet transform and related parameters
         wavelet_op_kwargs = {}
+        if WType is not None:
+            wavelet_op_kwargs["WType"] = WType
         if downsample_nan_weight_threshold is not None:
             wavelet_op_kwargs["downsample_nan_weight_threshold"] = (
                 downsample_nan_weight_threshold
@@ -140,6 +146,7 @@ class ST_Operator:
 
         # Scattering transform related parameters
         self.SC = SC
+        self.has_fewer_convolutions = has_fewer_convolutions
         self.replace_nan_value = replace_nan_value
 
         # Additional transform/compression related parameters
@@ -201,6 +208,7 @@ class ST_Operator:
         self,
         data,
         SC=None,
+        has_fewer_convolutions=None,
         norm=None,
         S2_ref_sqrt_chan_diag=None,
         iso=None,
@@ -239,6 +247,8 @@ class ST_Operator:
         # Scattering Transform
         - SC : str
             type of ST coefficients ("ScatCov", "WPH")
+        - has_fewer_convolutions : bool
+            For "ScatCov" type, whether the S3 and S4 coefficients are computed with one convolution less (Sihao version)
         - pass_mask : bool
             Pass mask to ST statistics object if True
 
@@ -296,6 +306,11 @@ class ST_Operator:
 
         # Local value for the scattering transform parameters
         SC = self.SC if SC is None else SC
+        has_fewer_convolutions = (
+            self.has_fewer_convolutions
+            if has_fewer_convolutions is None
+            else has_fewer_convolutions
+        )
 
         # Local value for the additional transforms parameters
         norm = self.norm if norm is None else norm
@@ -459,20 +474,24 @@ class ST_Operator:
                 ##############################################################################
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
+                if not has_fewer_convolutions:
+                    self.wavelet_op._compute_and_store_cross_cov(
+                        data_l1m_l2_j2,
+                        data_l1[:, :, None],
+                        output=data_st.S3[:, :, :, j2, j3, :, :],
+                        compute_cross_matrix=compute_cross_matrix,
+                        redundant_channels=False,
+                    )  # (Nb,Nc,Nc,L2,L3)
 
-                if (
-                    torch.isnan(data_l1m_l2_j2.array).sum() != 0
-                    or torch.isnan(data_l1[:, :, None].array).sum() != 0
-                ):
-                    print("NaN values")
-
-                self.wavelet_op._compute_and_store_cross_cov(
-                    data_l1m_l2_j2,
-                    data_l1[:, :, None],
-                    output=data_st.S3[:, :, :, j2, j3, :, :],
-                    compute_cross_matrix=compute_cross_matrix,
-                    redundant_channels=False,
-                )  # (Nb,Nc,Nc,L2,L3)
+                else:
+                    # Sihao S3 version : S3(j1,j2,j3) = Cov(I, |I*psi2|*psi3)
+                    self.wavelet_op._compute_and_store_cross_cov(
+                        l_data[:, :, None, None, :, :],  # [Nb,Nc,1,1,N3]
+                        data_l1m_l2_j2,  # [Nb,Nc,L2,L3,N3]
+                        output=data_st.S3[:, :, :, j2, j3, :, :],
+                        compute_cross_matrix=compute_cross_matrix,
+                        redundant_channels=False,
+                    )  # [Nb, Nc, Nc, L2, L3]
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
 
@@ -480,13 +499,28 @@ class ST_Operator:
                     ##############################################################################
                     ############## S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3) ##############
                     ##############################################################################
-                    self.wavelet_op._compute_and_store_cross_cov(
-                        data_l1m_l2[j1][:, :, :, None],
-                        data_l1m_l2[j2][:, :, None, :],
-                        output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
-                        compute_cross_matrix=compute_cross_matrix,
-                        redundant_channels=False,
-                    )  # (Nb,Nc,Nc,L1,L2,L3)
+                    if not has_fewer_convolutions:
+                        self.wavelet_op._compute_and_store_cross_cov(
+                            data_l1m_l2[j1][:, :, :, None],
+                            data_l1m_l2[j2][:, :, None, :],
+                            output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
+                            compute_cross_matrix=compute_cross_matrix,
+                            redundant_channels=False,
+                        )  # (Nb,Nc,Nc,L1,L2,L3)
+
+                    else:
+                        # Sihao S4 version : S4(j1,j2,j3) = Cov(|I*psi1|, |I*psi2|*psi3)
+                        self.wavelet_op._compute_and_store_cross_cov(
+                            data_l1m[j1][
+                                :, :, :, None, None, :, :
+                            ],  # [Nb,Nc,L1,1,1,N3]
+                            data_l1m_l2[j2][
+                                :, :, None, :, :, :, :
+                            ],  # [Nb,Nc,1,L2,L3,N3]
+                            output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
+                            compute_cross_matrix=compute_cross_matrix,
+                            redundant_channels=False,
+                        )  # (Nb,Nc,Nc,L1,L2,L3)
 
             # Downsample at Nj3
             if j3 < J - 1:

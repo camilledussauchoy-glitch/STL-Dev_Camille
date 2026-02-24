@@ -18,6 +18,7 @@ Characteristics:
 import math
 from dataclasses import dataclass
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -143,6 +144,13 @@ class STL_2D_Kernel_Torch(Base_DataClass):
     def get_ST_op(self, *args, **kwargs):
 
         return ST_Operator(data_example=self, *args, **kwargs)
+
+    ###############################################################################
+    def get_PS_op(self, *args, **kwargs):
+
+        return PS_operator_2D_Kernel_torch(
+            shape=self.N0, device=self.device, dtype=self.dtype, *args, **kwargs
+        )
 
 
 class WaveletOperator2Dkernel_torch:
@@ -625,7 +633,6 @@ class WaveletOperator2Dkernel_torch:
 
         return maskmean(
             x=cropped_array,
-            square=square,
             dim=dim,
             mask=cropped_mask,
         )
@@ -637,8 +644,9 @@ class WaveletOperator2Dkernel_torch:
 
         border = self._get_crop_border_size_method(data=data, wavelet_op=self)
         cropped_array = self._crop(array=data.array * data.array.conj(), border=border)
+        cropped_mask = self._crop(array=self._find_mask(data), border=border)
 
-        return maskmean(x=cropped_array, square=False, dim=dim)
+        return maskmean(x=cropped_array, dim=dim, mask=cropped_mask)
 
     def cov(self, data1, data2, remove_mean=None, dim=None):
         """
@@ -697,7 +705,6 @@ class WaveletOperator2Dkernel_torch:
         cropped_array = self._crop(array=x_c * torch.conj(y_c), border=border)
         cov = maskmean(
             x=cropped_array,
-            square=False,
             dim=dim,
             mask=self._crop(array=mask, border=border),
         )
@@ -826,7 +833,6 @@ class WaveletOperator2Dkernel_torch:
         """
         # Check coherence of input data.
         if not isinstance(data, STL_2D_Kernel_Torch):
-            print(data.__class__)
             raise Exception("Data should be a STL_2D_Kernel_Torch instance")
         if self.DT != data.DT:
             raise Exception("Data and wavelet transform should have same DT")
@@ -1030,3 +1036,276 @@ class WaveletOperator2Dkernel_torch:
             # _conv2d_circular expects w shape (O_c, wx, wy)
             self._smooth_kernel_5x5 = kernel
         return self._smooth_kernel_5x5
+
+
+class PS_operator_2D_Kernel_torch:
+    """
+    Class whose instances correspond to a power spectrum operator for 2D FFT data.
+    The operator is applied through apply method and is DT-dependent.
+    """
+
+    ###########################################################################
+    def __init__(
+        self,
+        shape,
+        n_bins=None,
+        device=_DEFAULT_DEVICE,
+        dtype=_DEFAULT_DTYPE,
+        get_crop_border_size_method="flexible_crop",
+    ):
+        """
+        Initialize a frequency binning object.
+
+        Args:
+            N0 (tuple): Image size (N, M)
+            n_bins (int): Number of radial frequency bins
+            device: torch device
+            dtype: torch dtype
+            get_crop_border_size_method : str ("flexible_crop" or "largest_crop")
+        """
+        self.shape = shape
+        self.n_bins = (
+            int(2 ** (np.log2(min(shape)) - 4)) if n_bins is None else n_bins
+        )  # adaptive number of bins
+        self.device = _get_device(torch.device(device))
+        self.dtype = _get_dtype(dtype=dtype, device=self.device)
+        self.get_crop_border_size_method = get_crop_border_size_method
+
+        # --- Build frequency bin masks ---
+        self._build()
+
+        # --- Estimate crop borders for each bin (for non-PBC data apply) ---
+        self.estimate_crop_borders()
+
+    ###########################################################################
+    def _build(self):
+        N, M = self.shape
+
+        # --- frequency grids ---
+        freq_y = torch.fft.fftfreq(N, d=1.0, device=self.device)
+        freq_x = torch.fft.fftfreq(M, d=1.0, device=self.device)
+
+        FY, FX = torch.meshgrid(freq_y, freq_x, indexing="ij")
+
+        # --- radial frequency ---
+        self.radial_freq = torch.fft.fftshift(
+            torch.sqrt(FX**2 + FY**2).to(self.dtype)
+        )  # [N, M]
+
+        # TODO: think about computing max spatial scale w.r.t pbc (-2 for periodic and -3 for non-periodic?)
+        J = int(np.log2(min(N, M))) - 2  # max spatial scale
+        self.min_freq = 1 / (2.0**J)
+        self.max_freq = 0.5  # Nyquist
+
+        # Linear regular binning
+        self.bin_edges = torch.linspace(
+            self.min_freq,
+            self.max_freq,
+            self.n_bins + 1,
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+        # --- bin masks ---
+        self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])  # [n_bins]
+        sigma = 0.5 * (self.bin_edges[:-1] - self.bin_edges[1:])  # [n_bins]
+        self.bin_masks = torch.exp(
+            -0.5
+            * ((self.radial_freq[None, :, :] - self.bin_centers[:, None, None]) ** 2)
+            / (sigma[:, None, None] ** 2)
+        )  # [n_bins, N, M]
+
+    def estimate_crop_borders(self):
+
+        N, M = self.shape
+
+        # Create impulse at right border, centered vertically
+        impulse = torch.zeros((N, M), device=self.device, dtype=self.dtype)
+        impulse[N // 2, M // 2] = 1.0
+
+        # FFT of impulse
+        impulse_ft = torch.fft.fftshift(torch.fft.fft2(impulse, norm="ortho"))  # [N, M]
+
+        # Apply all masks in batch
+        impulse_ft = impulse_ft.unsqueeze(0)  # [1, N, M] for broadcasting
+        psfs = torch.fft.ifft2(
+            torch.fft.ifftshift(impulse_ft * self.bin_masks, dim=(-2, -1)),
+            norm="ortho",
+            dim=(-2, -1),
+        ).real  # [n_bins, N, M]
+
+        # Extract horizontal traces from pixel source
+        traces = psfs[:, N // 2, : M // 2].abs()  # [n_bins, M//2]
+
+        # Determine border where PSF drops below threshold_percent of the trace at the source pixel (maximum value)
+        threshold_percent = 0.1
+        threshold = threshold_percent * traces[:, -1].unsqueeze(1)  # [n_bins, 1]
+        above_thresh = traces > threshold  # [n_bins, M//2]
+        self.crop_borders = math.ceil(M / 2) - (
+            above_thresh.float().argmax(dim=1) + 1
+        )  # [n_bins]
+
+    ###########################################################################
+    def buid_mask_crop(self, array, border):
+        """
+        Crops an array by removing 'border' pixels from each side
+        along the last two dimensions. Pads with zeros for each
+        cropped side (border may be different for each bin) to keep
+        the same output shape.
+
+        Parameters
+        ----------
+        array : torch.Tensor
+            Input array to be cropped. Shape [Nb, Nc, n_bins, N, M].
+        border : torch.Tensor
+            Number of pixels to remove from each side. Shape [n_bins].
+
+        Returns
+        -------
+        torch.Tensor
+            Cropped array. Shape [Nb, Nc, n_bins, N, M].
+        """
+
+        if array.ndim < 3:
+            raise ValueError(
+                "Input tensor must have at least 3 dimensions to apply per-bin crop."
+            )
+
+        n_bins_dim = array.shape[-3]  # dimension corresponding to bins
+        N, M = array.shape[-2], array.shape[-1]
+
+        # consistency check
+        if border.numel() != n_bins_dim:
+            raise ValueError(
+                f"border tensor length ({border.numel()}) "
+                f"does not match number of bins ({n_bins_dim})"
+            )
+
+        rows = torch.arange(N, device=array.device).view(1, N, 1)
+        cols = torch.arange(M, device=array.device).view(1, 1, M)
+        border_broadcast = border.view(n_bins_dim, 1, 1)
+
+        mask = (
+            (rows >= border_broadcast)
+            & (rows < (N - border_broadcast))
+            & (cols >= border_broadcast)
+            & (cols < (M - border_broadcast))
+        )  # [n_bins, N, M]
+
+        return mask
+
+    ###########################################################################
+    def apply(self, data, get_crop_border_size_method=None):
+        """
+        Compute the power spectrum of the input data array attribute.
+
+        Parameters
+        ----------
+        - data : STL_2D_Kernel_Torch
+            Input data whose array attribute's power spectrum is to be computed. Array should be in real space.
+
+        Returns
+        -------
+        torch.Tensor
+            Power spectrum values of shape [..., n_bins].
+        """
+        # consistency check
+        if type(data).__name__ != "STL_2D_Kernel_Torch":
+            raise Exception(
+                f"Data should be a STL_2D_Kernel_Torch instance, got {type(data)}"
+            )
+        if self.shape != data.N0:
+            raise Exception("Data shape does not match operator shape")
+        if data.dg != 0:
+            raise Exception("Data dg must be 0 for power spectrum computation")
+        if self.device != data.device:
+            raise Exception("Data device does not match operator device")
+
+        get_crop_border_size_method = (
+            self.get_crop_border_size_method
+            if get_crop_border_size_method is None
+            else get_crop_border_size_method
+        )
+
+        # Copy data and put its array in Fourier space
+        l_data = data.copy(empty=False)
+        l_data.array = torch.fft.fft2(l_data.array, norm="ortho")  # [Nb, Nc, N, M]
+        l_data.array = torch.fft.fftshift(l_data.array, dim=(-2, -1))  # [Nb, Nc, N, M]
+
+        # Put in the expected shape if not already (should be already done in ST_op apply)
+        if l_data.array.ndim == 2:
+            l_data.array = l_data.array[None, None, :, :]  # [1, 1, N, M]
+        elif l_data.array.ndim == 3:
+            l_data.array = l_data.array[None, :, :, :]  # [1, Nc, N, M]
+
+        # Apply bin masks
+        l_data.array = (
+            l_data.array[:, :, None, :, :] * self.bin_masks[None, None, :, :, :]
+        )  # [Nb, Nc, n_bins, N, M]
+
+        # Compute power spectrum
+        if l_data.pbc:
+            power_spectrum = (l_data.array.abs() ** 2).sum(
+                dim=(-2, -1)
+            ) / self.bin_masks.sum(
+                dim=(-2, -1)
+            )  # [Nb, Nc, n_bins]
+            return power_spectrum
+
+        if get_crop_border_size_method == "flexible_crop":
+            border = self.crop_borders
+        elif get_crop_border_size_method == "largest_crop":
+            border = torch.full_like(self.crop_borders, self.crop_borders.max())
+        else:
+            raise ValueError(
+                f"Invalid get_crop_border_size_method: {get_crop_border_size_method}"
+            )
+
+        l_data.array = torch.fft.ifft2(
+            l_data.array, norm="ortho"
+        )  # [Nb, Nc, n_bins, N, M]
+        l_data.array = l_data.array.abs() ** 2  # [Nb, Nc, n_bins, N, M]
+        mask_crop = self.buid_mask_crop(l_data.array, border=border)  # [n_bins, N, M]
+        prefactor = (l_data.N0[0] * l_data.N0[1]) / (mask_crop).sum(dim=(-2, -1))
+
+        power_spectrum = (
+            prefactor
+            * (l_data.array * (mask_crop)).sum(dim=(-2, -1))
+            / self.bin_masks.sum(dim=(-2, -1))
+        )
+        return power_spectrum  # [Nb, Nc, n_bin]
+
+    ###########################################################################
+    def plot_PS(self, ps_tensor, b=0, c=0, label="Power Spectrum", color="b"):
+        """
+        Plot the power spectrum.
+        Parameters
+        ----------
+        b : int
+            Batch index (0<=b<Nb)
+        c : int
+            Channel index (0<=c<Nc)
+        ps_tensor: torch.Tensor of shape [Nb, Nc, n_bins]
+            Power spectrum values to plot
+
+        Returns
+        -------
+        None
+        """
+
+        ps_values = ps_tensor[b, c, :].cpu().numpy()
+        freqs = self.bin_centers.cpu().numpy()
+
+        if ps_values.shape != freqs.shape:
+            raise ValueError(
+                f"ps_values shape: {ps_values.shape} and freqs shape: {freqs.shape} must have the same shape."
+            )
+
+        plt.plot(freqs, ps_values, "-", marker="o", label=label, color=color)
+
+        plt.yscale("log")
+        plt.xlabel("frequency")
+        plt.ylabel("Power Spectrum")
+        plt.title("Radial Power Spectrum")
+        plt.grid(True, which="both", ls="-", alpha=0.5)
+        plt.legend()
