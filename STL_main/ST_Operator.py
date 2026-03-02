@@ -6,6 +6,7 @@ Tentative proposal by EA
 """
 
 import numpy as np
+import torch
 
 import STL_main.torch_backend as bk  # from_numpy, zeros, ones, dim, shape, nan, eye
 from STL_main.ST_Statistics import ST_Statistics
@@ -57,6 +58,8 @@ class ST_Operator:
     # Scattering Transform
     - SC : str
         type of ST coefficients ("ScatCov", "WPH")
+    - has_fewer_convolutions : bool
+        For "ScatCov" type, whether the S3 and S4 coefficients are computed with one convolution less (Sihao version)
 
     # Additional transform/compression
     - norm : str
@@ -95,16 +98,21 @@ class ST_Operator:
         J=None,
         L=None,
         SC="ScatCov",
+        has_fewer_convolutions=False,
         replace_nan_value=bk.nan,
         mask_full_res=None,
-        norm="self",
+        norm="store_ref",
         S2_ref_sqrt_chan_diag=None,
         iso=False,
         angular_ft=False,
         scale_ft=False,
         flatten=False,
         mask_st=None,
+        dj=None,
+        harmonics_angle=None,
+        harmonics_scale=None,
         # Optional wavelet operator args
+        WType=None,
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
         # Power spectrum computation
@@ -121,6 +129,8 @@ class ST_Operator:
 
         # Wavelet transform and related parameters
         wavelet_op_kwargs = {}
+        if WType is not None:
+            wavelet_op_kwargs["WType"] = WType
         if mask_full_res is not None:
             wavelet_op_kwargs["mask_full_res"] = mask_full_res
         if downsample_nan_weight_threshold is not None:
@@ -141,6 +151,7 @@ class ST_Operator:
 
         # Scattering transform related parameters
         self.SC = SC
+        self.has_fewer_convolutions = has_fewer_convolutions
         self.replace_nan_value = replace_nan_value
 
         # Additional transform/compression related parameters
@@ -153,6 +164,10 @@ class ST_Operator:
         self.scale_ft = scale_ft
         self.flatten = flatten
         self.mask_st = mask_st
+
+        self.dj = dj
+        self.harmonics_angle = harmonics_angle
+        self.harmonics_scale = harmonics_scale
 
         # Power spectrum computation
         if compute_PS:
@@ -200,6 +215,7 @@ class ST_Operator:
         self,
         data,
         SC=None,
+        has_fewer_convolutions=None,
         norm=None,
         S2_ref_sqrt_chan_diag=None,
         iso=None,
@@ -240,6 +256,8 @@ class ST_Operator:
         # Scattering Transform
         - SC : str
             type of ST coefficients ("ScatCov", "WPH")
+        - has_fewer_convolutions : bool
+            For "ScatCov" type, whether the S3 and S4 coefficients are computed with one convolution less (Sihao version)
         - pass_mask : bool
             Pass mask to ST statistics object if True
 
@@ -297,6 +315,11 @@ class ST_Operator:
 
         # Local value for the scattering transform parameters
         SC = self.SC if SC is None else SC
+        has_fewer_convolutions = (
+            self.has_fewer_convolutions
+            if has_fewer_convolutions is None
+            else has_fewer_convolutions
+        )
 
         # Local value for the additional transforms parameters
         norm = self.norm if norm is None else norm
@@ -351,6 +374,7 @@ class ST_Operator:
 
         # Initialize ST statistics values
         # Add readability w.r.t. having it in the ST statistics initilization
+        l_data = data.copy()
 
         # Systematic statistics (data supposed to be real)
         assert (
@@ -360,22 +384,29 @@ class ST_Operator:
         data_st.var = self.wavelet_op.cov(data, data).real  # [Nb,Nc]
 
         if compute_PS:
-            data_st.PS = self.PS_op.apply(data)
+            data_st.PS = self.PS_op.apply(l_data)
 
         if SC == "ScatCov":
             #            data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
-            data_st.S1 = bk.zeros((Nb, Nc, Nc, J, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
-            data_st.S2 = bk.zeros((Nb, Nc, Nc, J, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
+            data_st.S1 = (
+                bk.zeros((Nb, Nc, Nc, J, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
+            )
+            data_st.S2 = (
+                bk.zeros((Nb, Nc, Nc, J, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
+            )
             data_st.S3 = (
                 bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
                 + bk.nan
             )
+            import torch
+
             data_st.S4 = (
                 bk.zeros(
                     (Nb, Nc, Nc, J, J, J, L, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE
                 )
                 + bk.nan
             )
+
             channels_with_auto_stats = compute_cross_matrix.diagonal()
             for channel in range(len(channels_with_auto_stats)):
                 if not channels_with_auto_stats[channel]:
@@ -403,7 +434,6 @@ class ST_Operator:
         # for FFT
 
         data_l1m = {}
-        l_data = data.copy()
         ### Higher order computation ###
 
         for j3 in range(J):
@@ -426,10 +456,12 @@ class ST_Operator:
             #            )  # (Nb,Nc,L3)
 
             # auto S1 terms
-            data_st.S1[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
-                self.wavelet_op.mean(
-                    data_l1m[j3][:, channels_with_auto_stats, :, :, :],
-                ).to(dtype=bk._DEFAULT_COMPLEX_DTYPE)
+            data_st.S1[
+                :, channels_with_auto_stats, channels_with_auto_stats, j3, :
+            ] = self.wavelet_op.mean(
+                data_l1m[j3][:, channels_with_auto_stats, :, :, :],
+            ).to(
+                dtype=bk._DEFAULT_COMPLEX_DTYPE
             )  # (Nb,Nc,Nc,L3)
 
             # cross S1 terms (sub diagonal only)
@@ -459,11 +491,10 @@ class ST_Operator:
             ##############################################################################
             # auto S2 terms
             data_st.S2[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
-                self.wavelet_op.mean(
-                    data_l1m[j3][:, channels_with_auto_stats, :, :, :],
-                    square=True,
-                ).to(dtype=bk._DEFAULT_COMPLEX_DTYPE)
-            )  # (Nb,Nc,Nc,L3)
+                self.wavelet_op.square_mean(
+                    data_l1m[j3][:, channels_with_auto_stats, :, :, :]
+                )
+            )  # (Nb, Nc, Nc, L3)
 
             # cross S2 terms (sub diagonal only)
             if (
@@ -477,7 +508,7 @@ class ST_Operator:
                     * (
                         ~bk.eye(Nc, dtype=bool, device=data.device)
                     ),  # remove diagonal wich was computed above with real mean square
-                    redundant_channel_pairs=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
+                    redundant_channels=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
                 )  # (Nb,Nc,Nc,L3)
 
             data_l1m_l2 = {}
@@ -498,13 +529,24 @@ class ST_Operator:
                 ##############################################################################
                 ################### S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3) ###################
                 ##############################################################################
-                self.wavelet_op._compute_and_store_cross_cov(
-                    data_l1m_l2_j2,
-                    data_l1[:, :, None],
-                    output=data_st.S3[:, :, :, j2, j3, :, :],
-                    compute_cross_matrix=compute_cross_matrix,
-                    redundant_channel_pairs=False,
-                )  # (Nb,Nc,Nc,L2,L3)
+                if not has_fewer_convolutions:
+                    self.wavelet_op._compute_and_store_cross_cov(
+                        data_l1m_l2_j2,
+                        data_l1[:, :, None],
+                        output=data_st.S3[:, :, :, j2, j3, :, :],
+                        compute_cross_matrix=compute_cross_matrix,
+                        redundant_channels=False,
+                    )  # (Nb,Nc,Nc,L2,L3)
+
+                else:
+                    # Sihao S3 version : S3(j1,j2,j3) = Cov(I, |I*psi2|*psi3)
+                    self.wavelet_op._compute_and_store_cross_cov(
+                        l_data[:, :, None, None, :, :],  # [Nb,Nc,1,1,N3]
+                        data_l1m_l2_j2,  # [Nb,Nc,L2,L3,N3]
+                        output=data_st.S3[:, :, :, j2, j3, :, :],
+                        compute_cross_matrix=compute_cross_matrix,
+                        redundant_channels=False,
+                    )  # [Nb, Nc, Nc, L2, L3]
 
                 data_l1m_l2[j2] = data_l1m_l2_j2  # (Nb,Nc,L2,L3,N3)
 
@@ -512,13 +554,28 @@ class ST_Operator:
                     ##############################################################################
                     ############## S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3) ##############
                     ##############################################################################
-                    self.wavelet_op._compute_and_store_cross_cov(
-                        data_l1m_l2[j1][:, :, :, None],
-                        data_l1m_l2[j2][:, :, None, :],
-                        output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
-                        compute_cross_matrix=compute_cross_matrix,
-                        redundant_channel_pairs=False,
-                    )  # (Nb,Nc,Nc,L1,L2,L3)
+                    if not has_fewer_convolutions:
+                        self.wavelet_op._compute_and_store_cross_cov(
+                            data_l1m_l2[j1][:, :, :, None],
+                            data_l1m_l2[j2][:, :, None, :],
+                            output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
+                            compute_cross_matrix=compute_cross_matrix,
+                            redundant_channels=False,
+                        )  # (Nb,Nc,Nc,L1,L2,L3)
+
+                    else:
+                        # Sihao S4 version : S4(j1,j2,j3) = Cov(|I*psi1|, |I*psi2|*psi3)
+                        self.wavelet_op._compute_and_store_cross_cov(
+                            data_l1m[j1][
+                                :, :, :, None, None, :, :
+                            ],  # [Nb,Nc,L1,1,1,N3]
+                            data_l1m_l2[j2][
+                                :, :, None, :, :, :, :
+                            ],  # [Nb,Nc,1,L2,L3,N3]
+                            output=data_st.S4[:, :, :, j1, j2, j3, :, :, :],
+                            compute_cross_matrix=compute_cross_matrix,
+                            redundant_channels=False,
+                        )  # (Nb,Nc,Nc,L1,L2,L3)
 
             # Downsample at Nj3
             if j3 < J - 1:
@@ -584,7 +641,7 @@ class ST_Operator:
         # Additional transform/compression
         ########################################
         # Normalisation
-        if norm is None:
+        if norm == "vanilla":
             pass
         elif norm == "store_ref":
             assert (
@@ -642,9 +699,9 @@ class ST_Operator:
             kwargs["mean_ref"] = mean_ref
             kwargs["var_ref"] = var_ref
             if SC == "ScatCov":
-                kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
+                kwargs["S2_ref_sqrt_chan_diag"] = self.S2_ref_sqrt_chan_diag
             if compute_PS:
-                kwargs["PS_ref"] = PS_ref
+                kwargs["PS_ref"] = self.PS_ref
 
             # Appel avec seulement les bons arguments
             data_st.to_norm(norm_type="from_ref", **kwargs)
@@ -653,10 +710,10 @@ class ST_Operator:
             data_st.to_iso()
 
         if angular_ft:
-            data_st.to_angular_ft()
+            data_st.to_angular_ft(self.harmonics_angle)
 
         if scale_ft:
-            data_st.to_scale_ft()
+            data_st.to_scale_ft(self.harmonics_scale, self.dj, self.harmonics_angle)
 
         if flatten:
             data_st.to_flatten(mask_st)

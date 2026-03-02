@@ -168,14 +168,7 @@ class ST_Statistics:
         )  # [Nb,Nc,Nc,J1,J2,J3,L1,L2,L3]
 
     ########################################
-    def to_norm(
-        self,
-        norm_type=None,
-        S2_ref_sqrt_chan_diag=None,
-        PS_ref=None,
-        mean_ref=None,
-        var_ref=None,
-    ):
+    def to_norm(self, norm_type=None, S2_ref_sqrt_chan_diag=None, PS_ref=None):
         """
         Normalize the ST statistics.
         Parameters
@@ -221,10 +214,14 @@ class ST_Statistics:
                 if self.S2_ref_sqrt_chan_diag is None:
                     # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
                     # and store as reference
-                    self.S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
+                    self.S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2).mean(
+                        dim=0, keepdim=True
+                    )  # mean over batch dimension
 
             if self.compute_PS:
-                PS_ref = self.PS * 1.0
+                PS_ref = 1.0 * self.PS.mean(
+                    dim=0, keepdim=True
+                )  # mean over batch dimension
 
         # Load_ref normalization
         elif norm_type == "from_ref":
@@ -252,7 +249,6 @@ class ST_Statistics:
 
         return self
 
-    ########################################
     def to_iso(self):
         """
         Isotropize the set of ST statistics
@@ -284,8 +280,12 @@ class ST_Statistics:
             self.S2 = bk.mean(self.S2, -1)  # (Nb,Nc,Nc,J,L) -> (Nb,Nc,Nc,J)
 
             # S3 and S4
-            S3iso = bk.zeros((Nb, Nc, Nc, J, J, L))
-            S4iso = bk.zeros((Nb, Nc, Nc, J, J, J, L, L))
+            S3iso = bk.zeros(
+                (Nb, Nc, Nc, J, J, L), device=self.S3.device, dtype=self.S3.dtype
+            )
+            S4iso = bk.zeros(
+                (Nb, Nc, Nc, J, J, J, L, L), device=self.S4.device, dtype=self.S3.dtype
+            )
             for l1 in range(L):
                 for l2 in range(L):
                     # (Nb,Nc,Nc,J,J,L,L) -> (Nb,Nc,Nc,J,J,L)
@@ -305,38 +305,176 @@ class ST_Statistics:
         return self
 
     ########################################
-    def to_angular_ft(self):
+    def to_angular_ft(self, harmonics_angle=None):
         """
         Angular harmonic transform on the ST statistcs
         """
+        Nb, Nc = self.Nb, self.Nc
+        J, L = self.J, self.L
+        if harmonics_angle is None:
+            harmonics_angle = self.L
 
         if self.scale_ft:
-            raise Exception("Angular_tf can only be done before scate_ft")
+            raise Exception("Angular_tf can only be done before scale_ft")
 
         # perform angular transform, to be done
         if self.SC == "ScatCov":
             if self.iso:
-                pass
+                S3f = bk.fft.fftn(
+                    self.S3, norm="ortho", dim=(-1)
+                )  # (Nb,Nc,Nc,J,J,L) -> (Nb,Nc,Nc,J,J,L)
+                S4f = bk.fft.fftn(
+                    self.S4, norm="ortho", dim=(-1, -2)
+                )  # (Nb,Nc,Nc,J,J,L,L) -> (Nb,Nc,Nc,J,J,L,L)
+                S3f = S3f[
+                    ..., :harmonics_angle
+                ]  # keep zeroth, first and second harmonic
+                S4f = S4f[..., :harmonics_angle, :harmonics_angle]
             else:
-                pass
+                S3f = bk.fft.fftn(
+                    self.S3, norm="ortho", dim=(-1, -2)
+                )  # (Nb,Nc,Nc,J,J,L,L) -> (Nb,Nc,Nc,J,J,L,L)
+                S4f = bk.fft.fftn(
+                    self.S4, norm="ortho", dim=(-1, -2, -3)
+                )  # (Nb,Nc,Nc,J,J,L,L,L) -> (Nb,Nc,Nc,J,J,L,L,L)
+                S3f = S3f[..., :harmonics_angle, :harmonics_angle]
+                S4f = S4f[..., :harmonics_angle, :harmonics_angle, :harmonics_angle]
 
+        self.S3 = S3f
+        self.S4 = S4f
         # store angular_ft parameter
         self.angular_ft = True
 
         return self
 
     ########################################
-    def to_scale_ft(self):
+    def to_scale_ft(self, harmonics_scale=None, dj=None, harmonics_angle=None):
         """
         Angular scale transform on the ST statistcs
         """
+        Nb, Nc = self.Nb, self.Nc
+        if harmonics_scale is None:
+            harmonics_scale = self.J
+        if dj is None:
+            dj = self.J + 1
+        if harmonics_angle is None:
+            harmonics_angle = self.L
 
-        # perform scale transform, to be done
+        J, L = self.J, harmonics_angle
+
+        def cosinus1(N, device, dtype):
+            """
+            The cosine basis cos(kpi (. + 0.5) / N) for 0 <= k < N.
+
+            :param N:
+            :return:
+            """
+            if N == 0:
+                return bk.zeros((0, 0), device=device, dtype=dtype)
+
+            ts = bk.linspace(0, bk.pi * (N - 1) / N, N, device=device, dtype=dtype) + (
+                0.5 * bk.pi / N
+            )
+            indices = bk.stack([k * ts for k in range(N)], dim=0)
+
+            F = bk.cos(indices)
+            F[1:, :] *= bk.sqrt(bk.tensor(2 / N, device=device, dtype=dtype))
+            F[0, :] *= bk.sqrt(bk.tensor(1 / N, device=device, dtype=dtype))
+
+            return F
+
         if self.SC == "ScatCov":
+            if self.iso:
+                S3_reparam = bk.zeros(
+                    (Nb, Nc, Nc, J, J, L), device=self.S3.device, dtype=self.S3.dtype
+                )
+                S4_reparam = bk.zeros(
+                    (Nb, Nc, Nc, J, J, J, L, L),
+                    device=self.S4.device,
+                    dtype=self.S3.dtype,
+                )
+                nan_complex = bk.tensor(
+                    complex(float("nan"), float("nan")),
+                    dtype=self.S3.dtype,
+                    device=self.S3.device,
+                )
+
+                for j1 in range(J):
+                    for j2 in range(J):
+                        dj2 = (j2 - j1) % J
+
+                        # Set to NaN if dj2 > 3
+                        if dj2 >= dj:
+                            S3_reparam[..., j1, dj2, :] = nan_complex
+                        else:
+                            S3_reparam[..., j1, dj2, :] = self.S3[..., j1, j2, :]
+
+                        for j3 in range(J):
+                            dj3 = (j3 - j1) % J
+                            dj32 = (j3 - j2) % J
+
+                            # Set to NaN if dj2 > 3 or dj3 > 3 or dj32 > 3
+                            if dj2 >= dj or dj3 >= dj or dj32 >= dj:
+                                S4_reparam[..., j1, dj2, dj3, :, :] = nan_complex
+                            else:
+                                S4_reparam[..., j1, dj2, dj3, :, :] = self.S4[
+                                    ..., j1, j2, j3, :, :
+                                ]
+
+                # # Apply DCT on the first J dimension
+                F = cosinus1(J, device=self.S3.device, dtype=self.S3.real.dtype)
+
+                S3_real = S3_reparam.real
+                S3_imag = S3_reparam.imag
+
+                # Create mask for NaN values
+                nan_mask = bk.isnan(S3_real) | bk.isnan(S3_imag)
+
+                # Replace NaN with 0 for computation
+                S3_real_clean = bk.nan_to_num(S3_real, nan=0.0)
+                S3_imag_clean = bk.nan_to_num(S3_imag, nan=0.0)
+
+                S3_real_reshaped = S3_real_clean.reshape(-1, J, L)
+                S3_imag_reshaped = S3_imag_clean.reshape(-1, J, L)
+
+                S3_cos_real = bk.matmul(F, S3_real_reshaped)
+                S3_cos_imag = bk.matmul(F, S3_imag_reshaped)
+
+                S3_cos = bk.complex(S3_cos_real, S3_cos_imag).reshape(S3_reparam.shape)
+
+                # Restore NaN where they were present
+                S3_cos[nan_mask] = complex(float("nan"), float("nan"))
+
+                S4_real = S4_reparam.real
+                S4_imag = S4_reparam.imag
+
+                # Create mask for NaN values
+                nan_mask = bk.isnan(S4_real) | bk.isnan(S4_imag)
+
+                # Replace NaN with 0 for computation
+                S4_real_clean = bk.nan_to_num(S4_real, nan=0.0)
+                S4_imag_clean = bk.nan_to_num(S4_imag, nan=0.0)
+
+                S4_real_reshaped = S4_real_clean.reshape(-1, J, J, L, L)
+                S4_imag_reshaped = S4_imag_clean.reshape(-1, J, J, L, L)
+
+                S4_cos_real = bk.einsum("ij,bjklm->biklm", F, S4_real_reshaped)
+                S4_cos_imag = bk.einsum("ij,bjklm->biklm", F, S4_imag_reshaped)
+
+                S4_cos = bk.complex(S4_cos_real, S4_cos_imag).reshape(S4_reparam.shape)
+
+                # Restore NaN where they were present
+                S4_cos[nan_mask] = complex(float("nan"), float("nan"))
+            else:
+                # TODO
+                pass
+        else:
             pass
 
+        self.S3 = S3_cos[:, :, :, 0:harmonics_scale]
+        self.S4 = S4_cos[:, :, :, 0:harmonics_scale]
         # store scale_ft parameter
-        self.angular_ft = True
+        self.scale_ft = True
 
         return self
 
@@ -357,6 +495,9 @@ class ST_Statistics:
         - st_flatten : 1d array
 
         """
+
+        # Collect all statistics into a list
+        stats = [self.mean, self.var]  # Always include mean and variance
 
         # Collect all stats (mean, var, PS, S1, S2, S3, S4) into a list
         stats = [self.mean, self.var]
