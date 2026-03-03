@@ -168,7 +168,14 @@ class ST_Statistics:
         )  # [Nb,Nc,Nc,J1,J2,J3,L1,L2,L3]
 
     ########################################
-    def to_norm(self, norm_type=None, S2_ref_sqrt_chan_diag=None, PS_ref=None):
+    def to_norm(
+        self,
+        norm_type=None,
+        S2_ref_sqrt_chan_diag=None,
+        PS_ref=None,
+        mean_ref=None,
+        var_ref=None,
+    ):
         """
         Normalize the ST statistics.
         Parameters

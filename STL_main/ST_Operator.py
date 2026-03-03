@@ -461,7 +461,7 @@ class ST_Operator:
             ] = self.wavelet_op.mean(
                 data_l1m[j3][:, channels_with_auto_stats, :, :, :],
             ).to(
-                dtype=bk._DEFAULT_COMPLEX_DTYPE
+                dtype=data_st.S1.dtype  # cast to complex if needed
             )  # (Nb,Nc,Nc,L3)
 
             # cross S1 terms (sub diagonal only)
@@ -483,18 +483,20 @@ class ST_Operator:
                     * (
                         ~bk.eye(Nc, dtype=bool, device=data.device)
                     ),  # remove diagonal wich was computed above with real mean square
-                    redundant_channel_pairs=True,  # S1(c1,c2) and S1(c2,c1) are conjugates
+                    redundant_channels=True,  # S1(c1,c2) and S1(c2,c1) are conjugates
                 )  # (Nb,Nc,Nc,L3)
 
             ##############################################################################
             ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
             ##############################################################################
             # auto S2 terms
-            data_st.S2[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
-                self.wavelet_op.square_mean(
-                    data_l1m[j3][:, channels_with_auto_stats, :, :, :]
-                )
-            )  # (Nb, Nc, Nc, L3)
+            data_st.S2[
+                :, channels_with_auto_stats, channels_with_auto_stats, j3, :
+            ] = self.wavelet_op.square_mean(
+                data_l1m[j3][:, channels_with_auto_stats, :, :, :]
+            ).to(
+                dtype=data_st.S2.dtype  # cast to complex if needed
+            )  # (Nb,Nc,Nc,L3)
 
             # cross S2 terms (sub diagonal only)
             if (

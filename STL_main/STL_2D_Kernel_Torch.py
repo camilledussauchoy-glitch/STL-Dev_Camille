@@ -624,7 +624,7 @@ class WaveletOperator2Dkernel_torch:
                 pass
             return array[..., border:-border, border:-border]
 
-    def mean(self, data, square=False, dim=None):
+    def mean(self, data, dim=None):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         """
@@ -654,7 +654,7 @@ class WaveletOperator2Dkernel_torch:
 
         return maskmean(x=cropped_array, dim=dim, mask=cropped_mask)
 
-    def cov(self, data1, data2, remove_mean=None, dim=None):
+    def cov(self, data1, data2, remove_mean=None, dim=None, specific_channel_pair=None):
         """
         Compute the covariance between data1=self and data2 on the last two
         dimensions (Nx, Ny).
