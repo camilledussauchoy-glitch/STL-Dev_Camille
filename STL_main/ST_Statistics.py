@@ -238,7 +238,10 @@ class ST_Statistics:
                 self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
 
         # Perform normalization and store reference
-        self.mean = self.mean / mean_ref
+        if bk.where(mean_ref == 0, self.mean != 0, False).any():
+            raise Exception("Cannot normalize nonzero mean by zero")
+        else:
+            self.mean = bk.where(mean_ref != 0, self.mean / mean_ref, 1.0)
         self.mean_ref = mean_ref
 
         self.var = self.var / var_ref
