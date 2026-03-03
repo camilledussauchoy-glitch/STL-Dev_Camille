@@ -323,6 +323,21 @@ class ST_Operator:
 
         # Local value for the additional transforms parameters
         norm = self.norm if norm is None else norm
+        if norm == "store_ref":
+            assert (
+                mean_ref is None
+            ), "mean_ref should not be provided when norm='store_ref'"
+            assert (
+                var_ref is None
+            ), "var_ref should not be provided when norm='store_ref'"
+            if SC == "ScatCov":
+                assert (
+                    S2_ref_sqrt_chan_diag is None
+                ), "S2_ref_sqrt_chan_diag should not be provided when norm='store_ref'"
+            if compute_PS:
+                assert (
+                    PS_ref is None
+                ), "PS_ref should not be provided when norm='store_ref'"
         S2_ref_sqrt_chan_diag = (
             self.S2_ref_sqrt_chan_diag
             if S2_ref_sqrt_chan_diag is None
@@ -646,21 +661,6 @@ class ST_Operator:
         if norm == "vanilla":
             pass
         elif norm == "store_ref":
-            assert (
-                mean_ref is None
-            ), "mean_ref should not be provided when norm='store_ref'"
-            assert (
-                var_ref is None
-            ), "var_ref should not be provided when norm='store_ref'"
-            if SC == "ScatCov":
-                assert (
-                    S2_ref_sqrt_chan_diag is None
-                ), "S2_ref_sqrt_chan_diag should not be provided when norm='store_ref'"
-            if compute_PS:
-                assert (
-                    PS_ref is None
-                ), "PS_ref should not be provided when norm='store_ref'"
-
             if self.mean_ref is not None:
                 print("Replacing existing mean_ref in ST_Op")
             if self.var_ref is not None:
@@ -701,9 +701,9 @@ class ST_Operator:
             kwargs["mean_ref"] = mean_ref
             kwargs["var_ref"] = var_ref
             if SC == "ScatCov":
-                kwargs["S2_ref_sqrt_chan_diag"] = self.S2_ref_sqrt_chan_diag
+                kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
             if compute_PS:
-                kwargs["PS_ref"] = self.PS_ref
+                kwargs["PS_ref"] = PS_ref
 
             # Appel avec seulement les bons arguments
             data_st.to_norm(norm_type="from_ref", **kwargs)

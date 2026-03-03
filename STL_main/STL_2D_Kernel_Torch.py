@@ -130,7 +130,7 @@ class STL_2D_Kernel_Torch(Base_DataClass):
         if mask_full_res is None:
             if torch.any(self.array.isnan()):
                 mask_full_res = STL_2D_Kernel_Torch(array=self.array.isnan())
-                print("mask_full_res:", mask_full_res.array)
+                # print("mask_full_res:", mask_full_res.array)
         return WaveletOperator2Dkernel_torch(
             J=J,
             DT=self.DT,

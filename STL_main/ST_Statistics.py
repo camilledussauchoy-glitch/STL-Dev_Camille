@@ -205,7 +205,7 @@ class ST_Statistics:
 
         # Leave the function if no normalization is required
         if norm_type is None:
-            pass
+            raise Exception("No normalization type specified")
 
         # Verifications
         if self.norm:
@@ -505,9 +505,6 @@ class ST_Statistics:
 
         # Collect all statistics into a list
         stats = [self.mean, self.var]  # Always include mean and variance
-
-        # Collect all stats (mean, var, PS, S1, S2, S3, S4) into a list
-        stats = [self.mean, self.var]
 
         if self.SC == "ScatCov":
             stats += [self.S1, self.S2, self.S3, self.S4]
