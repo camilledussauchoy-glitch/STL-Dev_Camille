@@ -165,9 +165,9 @@ class ST_Operator:
         self.harmonics_scale = harmonics_scale
 
         # Power spectrum computation
-        if compute_PS:
-            self.PS_op = data_example.get_PS_op()  # PowerSpectrum_Operator(N0)
         self.compute_PS = compute_PS
+        self.CS_op = data_example.get_CS_op()
+        self.n_bins = self.CS_op.n_bins
         self.PS_ref = PS_ref
 
     ########################################
@@ -221,6 +221,7 @@ class ST_Operator:
         compute_PS=None,
         PS_ref=None,
         compute_cross_matrix=None,
+        compute_cross_spectrum_matrix=None,
     ):
         """
         Compute the Scattering Transform (ST) of data, which are either stored
@@ -273,6 +274,14 @@ class ST_Operator:
         # Power spectrum computation
         - compute_PS : bool
             whether to compute power spectrum coefficients in addition to ST statistics
+        - PS_ref : array
+            array of reference PS coefficients
+        - compute_cross_spectrum_matrix : ndarray of bool (Default: None which is auto-statistics only)
+            Upper triangular matrix with shape (Nc,Nc), which determines pairs of channels for which to compute cross-spectrum.
+            More precisely:
+                - for c1 <= c2, computes PS(c1,c2) if and only if compute_cross_spectrum_matrix[c1,c2] == True
+                - for c1 > c2, compute_cross_spectrum_matrix[c1,c2] is ignored and should not be specified
+            If None, it is replaced by a boolean matrix whose upper triangular part is full of True, so that all cross-spectrum are computed.
 
         # Cross statistics computation
         - compute_cross_matrix : ndarray of bool (Default: None which is auto-statistics only)
@@ -369,8 +378,17 @@ class ST_Operator:
         data_st.mean = self.wavelet_op.mean(l_data)  # [Nb,Nc]
         data_st.var = self.wavelet_op.cov(l_data, l_data)  # [Nb,Nc]
 
+        import torch
+
         if compute_PS:
-            data_st.PS = self.PS_op.apply(l_data)
+            compute_cross_spectrum_matrix = (
+                torch.triu(bk.ones((Nc, Nc), dtype=bool, device=data.device))
+                if compute_cross_spectrum_matrix is None
+                else compute_cross_spectrum_matrix.to(device=data.device)
+            )
+            data_st.PS = self.CS_op.apply(
+                l_data, compute_cross_spectrum_matrix=compute_cross_spectrum_matrix
+            )
 
         if SC == "ScatCov":
             data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
