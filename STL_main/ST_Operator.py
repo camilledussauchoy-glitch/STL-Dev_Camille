@@ -5,6 +5,8 @@ Main structure of STL
 Tentative proposal by EA
 """
 
+import warnings
+
 import numpy as np
 import torch
 
@@ -477,7 +479,9 @@ class ST_Operator:
                 if not has_fewer_convolutions:
                     self.wavelet_op._compute_and_store_cross_cov(
                         data_l1m_l2_j2,
-                        data_l1[:, :, None],
+                        data_l1[
+                            :, :, None, :, :, :
+                        ],  # (Nb,Nc,L2,L3,N3) x (Nb,Nc,1,L3,N3)
                         output=data_st.S3[:, :, :, j2, j3, :, :],
                         compute_cross_matrix=compute_cross_matrix,
                         redundant_channels=False,
@@ -593,6 +597,19 @@ class ST_Operator:
                 print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
             if compute_PS and self.PS_ref is not None:
                 print("Replacing existing PS_ref in ST_Op")
+
+            # Check if some auto-stats are not computed
+            missing_auto = np.where(~np.diag(compute_cross_matrix))[0]
+
+            if len(missing_auto) > 0:
+                warnings.warn(
+                    f"S2 auto-stats are not computed for channels {(missing_auto + 1).tolist()}. "
+                    "Using norm='store_ref' normalizes with sqrt(S2 auto-stats) and may generate NaNs "
+                    "for cross-statistics involving these channels.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
             data_st.to_norm(norm_type="self")
             if SC == "ScatCov":
                 self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
