@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from scipy.integrate import quad
 
 import STL_main.torch_backend as bk
 from STL_main.Base_DataClass import Base_DataClass
@@ -1176,6 +1177,34 @@ class CS_operator_2D_FFT_torch:
     The operator is applied through apply method and is DT-dependent.
     """
 
+    # Useful functions for the bin mask wavelet bank construction
+    @staticmethod
+    def s(t):
+        if -1 < t < 1:
+            return np.exp(-1.0 / (1.0 - t**2))
+        return 0.0
+
+    @classmethod
+    def s_lambda(cls, t, lam):
+        return cls.s((2.0 * lam / (lam - 1.0)) * (t - 1.0 / lam) - 1.0)
+
+    @classmethod
+    def k_lambda(cls, t, lam):
+        if t <= 1.0 / lam:
+            return 1.0
+        if t >= 1.0:
+            return 0.0
+
+        # Integrals
+        num, _ = quad(lambda tp: (cls.s_lambda(tp, lam) ** 2) / tp, t, 1.0)
+        den, _ = quad(lambda tp: (cls.s_lambda(tp, lam) ** 2) / tp, 1.0 / lam, 1.0)
+        return num / den
+
+    @classmethod
+    def kappa_lambda(cls, t, lam):
+        val = cls.k_lambda(t / lam, lam) - cls.k_lambda(t, lam)
+        return np.sqrt(max(val, 0))
+
     ###########################################################################
     def __init__(
         self,
@@ -1204,48 +1233,50 @@ class CS_operator_2D_FFT_torch:
         self.get_crop_border_size_method = get_crop_border_size_method
 
         # --- Build frequency bin masks ---
-        self._build()
+        self._build_bin_masks()
 
         # --- Estimate crop borders for each bin (for non-PBC data apply) ---
         self.estimate_crop_borders()
 
     ###########################################################################
-    def _build(self):
+    def _build_bin_masks(self):
+
         N, M = self.shape
 
-        # --- frequency grids ---
-        freq_y = torch.fft.fftfreq(N, d=1.0, device=self.device)
-        freq_x = torch.fft.fftfreq(M, d=1.0, device=self.device)
+        max_scale = int(np.log2(min(N, M))) - 2
+        self.min_freq = 1 / (2.0**max_scale)
+        self.max_freq = 0.5  # Nyquist frequency
 
+        # get radial profil at high resolution
+        lam = (self.max_freq / self.min_freq) ** (1 / (self.n_bins + 1))
+
+        k_vals = torch.linspace(self.min_freq, self.max_freq, 1000)
+        scales_j = torch.arange(1, self.n_bins + 1)
+
+        psi_kernels = []
+        for j in scales_j:
+            psi_j = np.array(
+                [self.kappa_lambda(k / (self.min_freq * lam**j), lam) for k in k_vals]
+            )
+            psi_kernels.append(psi_j)
+
+        # go from 1D radial profile to 2D bin masks
+        freq_y = torch.fft.fftfreq(N)
+        freq_x = torch.fft.fftfreq(M)
         FY, FX = torch.meshgrid(freq_y, freq_x, indexing="ij")
 
-        # --- radial frequency ---
-        self.radial_freq = torch.fft.fftshift(
-            torch.sqrt(FX**2 + FY**2).to(self.dtype)
-        )  # [N, M]
+        radial_freq = torch.fft.fftshift(torch.sqrt(FX**2 + FY**2))
 
-        # TODO: think about computing max spatial scale w.r.t pbc (-2 for periodic and -3 for non-periodic?)
-        J = int(np.log2(min(N, M))) - 2  # max spatial scale
-        self.min_freq = 1 / (2.0**J)
-        self.max_freq = 0.5  # Nyquist
+        k_vals_tensor = torch.tensor(k_vals)
+        diff = torch.abs(radial_freq.unsqueeze(-1) - k_vals_tensor)
+        idx = torch.argmin(diff, dim=-1)
 
-        # Linear regular binning
-        self.bin_edges = torch.linspace(
-            self.min_freq,
-            self.max_freq,
-            self.n_bins + 1,
-            device=self.device,
-            dtype=self.dtype,
-        )
+        psi_kernels_tensor = torch.tensor(psi_kernels)  # shape [n_bins, 1000]
+        self.bin_masks = torch.zeros((self.n_bins, N, M))
+        for j in range(self.n_bins):
+            self.bin_masks[j] = psi_kernels_tensor[j][idx]
 
-        # --- bin masks ---
-        self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])  # [n_bins]
-        sigma = 0.5 * (self.bin_edges[:-1] - self.bin_edges[1:])  # [n_bins]
-        self.bin_masks = torch.exp(
-            -0.5
-            * ((self.radial_freq[None, :, :] - self.bin_centers[:, None, None]) ** 2)
-            / (sigma[:, None, None] ** 2)
-        )  # [n_bins, N, M]
+        self.bin_centers = self.min_freq * lam**scales_j
 
     def estimate_crop_borders(self):
 
@@ -1381,14 +1412,6 @@ class CS_operator_2D_FFT_torch:
             else compute_cross_spectrum_matrix
         )
 
-        """
-        cross_product = l_data.array[:, :, None, :, :]  * torch.conj(l_data.array[:, None, :, :, :]) # [Nb, Nc, Nc, N, M]                  
-
-        cross_product_bin = (
-            cross_product[:, :, :, None, :, :] *
-            self.bin_masks[None, None, None, :, :, :]
-        )
-        """
         l_data_bin = (
             l_data.array[:, :, None, :, :] * self.bin_masks[None, None, :, :, :]
         )  # [Nb, Nc, Nbin, N, M]
@@ -1477,6 +1500,7 @@ class CS_operator_2D_FFT_torch:
 
         plt.plot(freqs, cs_values, "-", marker="o", label=label, color=color)
 
+        plt.xscale("log")
         plt.yscale("log")
         plt.xlabel("frequency")
         plt.ylabel("Cross Spectra")
