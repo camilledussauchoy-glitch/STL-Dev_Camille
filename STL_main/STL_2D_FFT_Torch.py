@@ -1277,6 +1277,7 @@ class CS_operator_2D_FFT_torch:
             self.bin_masks[j] = psi_kernels_tensor[j][idx]
 
         self.bin_centers = self.min_freq * lam**scales_j
+        self.lam = lam
 
     def estimate_crop_borders(self):
 
