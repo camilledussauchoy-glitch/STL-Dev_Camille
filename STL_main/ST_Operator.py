@@ -119,6 +119,7 @@ class ST_Operator:
         # Power spectrum computation
         compute_PS=False,
         PS_ref=None,
+        **kwargs,
     ):
         """
         Constructor, see details above.
@@ -166,7 +167,7 @@ class ST_Operator:
 
         # Power spectrum computation
         self.compute_PS = compute_PS
-        self.CS_op = data_example.get_CS_op()
+        self.CS_op = data_example.get_CS_op(**kwargs)
         self.n_bins = self.CS_op.n_bins
         self.PS_ref = PS_ref
 

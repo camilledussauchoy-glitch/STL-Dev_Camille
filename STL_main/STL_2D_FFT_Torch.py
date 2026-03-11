@@ -1416,6 +1416,7 @@ class CS_operator_2D_FFT_torch:
         l_data_bin = (
             l_data.array[:, :, None, :, :] * self.bin_masks[None, None, :, :, :]
         )  # [Nb, Nc, Nbin, N, M]
+
         cross_product_bin = l_data_bin[:, :, None, :, :, :] * torch.conj(
             l_data.array[:, None, :, None, :, :]
         )  # [Nb, Nc, Nc, n_bins, N, M]
@@ -1457,13 +1458,15 @@ class CS_operator_2D_FFT_torch:
             dim=(-2, -1)
         )  # [n_bins]
 
+        cross_product_bin_real = ifft_l_data_bin[:, :, None, :, :, :] * torch.conj(
+            l_data.array[:, None, :, None, :, :]
+        )  # [Nb, Nc, Nc, n_bins, N, M]
+
         cross_vals = (
             prefactor
-            * (
-                ifft_l_data_bin[:, :, None, :, :, :]
-                * torch.conj(l_data.array[:, None, :, None, :, :])
-                * mask_crop[None, None, None, :, :, :]
-            ).sum(dim=(-2, -1))
+            * (cross_product_bin_real * mask_crop[None, None, None, :, :, :]).sum(
+                dim=(-2, -1)
+            )
             / self.bin_masks.sum(dim=(-2, -1))[None, None, None, :]
         ).to(dtype=bk._DEFAULT_COMPLEX_DTYPE)
 
@@ -1471,6 +1474,7 @@ class CS_operator_2D_FFT_torch:
             :, compute_cross_spectrum_matrix, :
         ]
 
+        # return cross_spectrum, cross_product_bin, cross_product_bin_real
         return cross_spectrum  # [Nb, Nc, Nc, n_bins]
 
     ###########################################################################
