@@ -395,8 +395,8 @@ class ST_Operator:
         assert (
             data.array.is_complex() == False
         ), "Data should be real for now, otherwise mean and var computation should be adapted"
-        data_st.mean = self.wavelet_op.mean(data).real  # [Nb,Nc]
-        data_st.var = self.wavelet_op.cov(data, data).real  # [Nb,Nc]
+        data_st.mean = self.wavelet_op.mean(l_data).real  # [Nb,Nc]
+        data_st.var = self.wavelet_op.cov(l_data, l_data).real  # [Nb,Nc]
 
         if compute_PS:
             data_st.PS = self.PS_op.apply(l_data)
