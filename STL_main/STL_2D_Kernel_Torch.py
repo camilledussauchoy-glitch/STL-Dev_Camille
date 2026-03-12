@@ -299,6 +299,7 @@ class WaveletOperator2Dkernel_torch:
         J,
         L=None,
         kernel_size=None,
+        WType="Morlet",
         DT="Planar2D_kernel_torch",
         device=_DEFAULT_DEVICE,
         dtype=_DEFAULT_DTYPE,
@@ -311,6 +312,8 @@ class WaveletOperator2Dkernel_torch:
             raise ValueError(
                 "J must be specified for WaveletOperator2Dkernel_torch class."
             )
+        self.WType = WType
+
         self.J = J
         self.L = L if L is not None else 4
         self.KERNELSZ = kernel_size if kernel_size is not None else 5
@@ -319,13 +322,18 @@ class WaveletOperator2Dkernel_torch:
         self.device = _get_device(torch.device(device))
         self.dtype = _get_dtype(dtype=dtype, device=self.device)
 
-        self._wav_kernel = self._build_wavelet_kernel()
+        if self.WType == "Morlet":
+            self._wav_kernel = self._build_morlet_wavelet_kernel()
+        else:
+            raise ValueError(
+                f"WType {self.WType} not recognized. Available options: 'Morlet'."
+            )
+
         self.sigma_smooth = (
             sigma_smooth  # to build smoothing kernel used in downsampling
         )
         # raise
         # build low pass kernel?
-        self.WType = "simple"
 
         # PBC dependant parameters
         if get_crop_border_size_method is not None:
@@ -537,7 +545,7 @@ class WaveletOperator2Dkernel_torch:
             else:
                 raise ValueError("len(data.conv_history) must be 0, 1 or 2.")
 
-    def _build_wavelet_kernel(self, sigma=1):
+    def _build_morlet_wavelet_kernel(self, sigma=1):
         """Create a 2D Wavelet kernel."""
 
         # Morlay wavelet

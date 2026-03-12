@@ -45,3 +45,4 @@
 - Completed the exhaustive user notebook for syntheses
 
 ### Fixed
+- Added the WType argument to the constructor of the Wavelet operator in the STL_2D_Kernel_Torch dataclass. Currently available: Morlet
