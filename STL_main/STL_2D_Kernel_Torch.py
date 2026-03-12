@@ -130,7 +130,7 @@ class STL_2D_Kernel_Torch(Base_DataClass):
         if mask_full_res is None:
             if torch.any(self.array.isnan()):
                 mask_full_res = STL_2D_Kernel_Torch(array=self.array.isnan())
-
+                # print("mask_full_res:", mask_full_res.array)
         return WaveletOperator2Dkernel_torch(
             J=J,
             DT=self.DT,
@@ -337,6 +337,12 @@ class WaveletOperator2Dkernel_torch:
         self.mask_full_res = (
             mask_full_res  # None if no NaN in the data. Is True where the data is NaN.
         )
+        if self.mask_full_res is not None:
+            if self.mask_full_res.array.ndim != 2:
+                raise NotImplementedError(
+                    "For now, mask_full_res.array must be 2D if provided."
+                )
+
         self.downsample_nan_weight_threshold = downsample_nan_weight_threshold
         (
             self._reweighting_maps_smooth,
@@ -618,7 +624,7 @@ class WaveletOperator2Dkernel_torch:
                 pass
             return array[..., border:-border, border:-border]
 
-    def mean(self, data, square=False, dim=None):
+    def mean(self, data, dim=None):
         """
         Compute the mean on the last two dimensions (Nx, Ny).
         """
@@ -648,7 +654,7 @@ class WaveletOperator2Dkernel_torch:
 
         return maskmean(x=cropped_array, dim=dim, mask=cropped_mask)
 
-    def cov(self, data1, data2, remove_mean=None, dim=None):
+    def cov(self, data1, data2, remove_mean=None, dim=None, specific_channel_pair=None):
         """
         Compute the covariance between data1=self and data2 on the last two
         dimensions (Nx, Ny).
@@ -683,6 +689,13 @@ class WaveletOperator2Dkernel_torch:
                 else:
                     # mask for |I*psi2|*psi3 does not necessarily contains the one for |I*psi1|*psi3, and vice-versa
                     mask = self._find_mask(data1) + self._find_mask(data2)
+
+            # if specific_channel_pair is not None:
+            #    c1, c2 = specific_channel_pair
+            #    if c1 == c2:
+            #        mask = mask[c1, ...]
+            #    else:
+            #        mask = self._find_mask(data1)[c1, ...] + self._find_mask(data2)[c2, ...]
 
         border = max(
             self._get_crop_border_size_method(data=data1, wavelet_op=self),
@@ -804,6 +817,7 @@ class WaveletOperator2Dkernel_torch:
                         data2=data2[:, c2, ...],
                         remove_mean=remove_mean,
                         dim=dim,
+                        specific_channel_pair=(c1, c2),
                     )
 
                     if not redundant_channels and c1 != c2:
@@ -812,6 +826,7 @@ class WaveletOperator2Dkernel_torch:
                             data2=data2[:, c1, ...],
                             remove_mean=remove_mean,
                             dim=dim,
+                            specific_channel_pair=(c2, c1),
                         )
         return
 

@@ -100,6 +100,7 @@ class ST_Operator:
         SC="ScatCov",
         has_fewer_convolutions=False,
         replace_nan_value=bk.nan,
+        mask_full_res=None,
         norm="store_ref",
         S2_ref_sqrt_chan_diag=None,
         iso=False,
@@ -117,6 +118,8 @@ class ST_Operator:
         # Power spectrum computation
         compute_PS=False,
         PS_ref=None,
+        mean_ref=None,
+        var_ref=None,
     ):
         """
         Constructor, see details above.
@@ -128,6 +131,8 @@ class ST_Operator:
         wavelet_op_kwargs = {}
         if WType is not None:
             wavelet_op_kwargs["WType"] = WType
+        if mask_full_res is not None:
+            wavelet_op_kwargs["mask_full_res"] = mask_full_res
         if downsample_nan_weight_threshold is not None:
             wavelet_op_kwargs["downsample_nan_weight_threshold"] = (
                 downsample_nan_weight_threshold
@@ -152,6 +157,8 @@ class ST_Operator:
         # Additional transform/compression related parameters
         self.norm = norm
         self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
+        self.mean_ref = mean_ref
+        self.var_ref = var_ref
         self.iso = iso
         self.angular_ft = angular_ft
         self.scale_ft = scale_ft
@@ -218,6 +225,8 @@ class ST_Operator:
         mask_st=None,
         compute_PS=None,
         PS_ref=None,
+        mean_ref=None,
+        var_ref=None,
         compute_cross_matrix=None,
     ):
         """
@@ -314,6 +323,21 @@ class ST_Operator:
 
         # Local value for the additional transforms parameters
         norm = self.norm if norm is None else norm
+        if norm == "store_ref":
+            assert (
+                mean_ref is None
+            ), "mean_ref should not be provided when norm='store_ref'"
+            assert (
+                var_ref is None
+            ), "var_ref should not be provided when norm='store_ref'"
+            if SC == "ScatCov":
+                assert (
+                    S2_ref_sqrt_chan_diag is None
+                ), "S2_ref_sqrt_chan_diag should not be provided when norm='store_ref'"
+            if compute_PS:
+                assert (
+                    PS_ref is None
+                ), "PS_ref should not be provided when norm='store_ref'"
         S2_ref_sqrt_chan_diag = (
             self.S2_ref_sqrt_chan_diag
             if S2_ref_sqrt_chan_diag is None
@@ -327,6 +351,9 @@ class ST_Operator:
 
         compute_PS = self.compute_PS if compute_PS is None else compute_PS
         PS_ref = self.PS_ref if PS_ref is None else PS_ref
+
+        mean_ref = self.mean_ref if mean_ref is None else mean_ref
+        var_ref = self.var_ref if var_ref is None else var_ref
 
         # Put in torch or relevant bk
         if type(data.array) == np.ndarray:
@@ -364,15 +391,24 @@ class ST_Operator:
         # Add readability w.r.t. having it in the ST statistics initilization
         l_data = data.copy()
 
-        data_st.mean = self.wavelet_op.mean(l_data)  # [Nb,Nc]
-        data_st.var = self.wavelet_op.cov(l_data, l_data)  # [Nb,Nc]
+        # Systematic statistics (data supposed to be real)
+        assert (
+            data.array.is_complex() == False
+        ), "Data should be real for now, otherwise mean and var computation should be adapted"
+        data_st.mean = self.wavelet_op.mean(l_data).real  # [Nb,Nc]
+        data_st.var = self.wavelet_op.cov(l_data, l_data).real  # [Nb,Nc]
 
         if compute_PS:
             data_st.PS = self.PS_op.apply(l_data)
 
         if SC == "ScatCov":
-            data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
-            data_st.S2 = bk.zeros((Nb, Nc, Nc, J, L)) + bk.nan
+            #            data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
+            data_st.S1 = (
+                bk.zeros((Nb, Nc, Nc, J, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
+            )
+            data_st.S2 = (
+                bk.zeros((Nb, Nc, Nc, J, L), dtype=bk._DEFAULT_COMPLEX_DTYPE) + bk.nan
+            )
             data_st.S3 = (
                 bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
                 + bk.nan
@@ -430,31 +466,67 @@ class ST_Operator:
             ##############################################################################
             ########################## S1(j3) = Mean(|I*psi3|) ###########################
             ##############################################################################
-            data_st.S1[:, channels_with_auto_stats, j3, :] = self.wavelet_op.mean(
-                data_l1m[j3][:, channels_with_auto_stats, :, :],
-            )  # (Nb,Nc,L3)
+            #            data_st.S1[:, channels_with_auto_stats, j3, :] = self.wavelet_op.mean(
+            #                data_l1m[j3][:, channels_with_auto_stats, :, :],
+            #            )  # (Nb,Nc,L3)
+
+            # auto S1 terms
+            data_st.S1[
+                :, channels_with_auto_stats, channels_with_auto_stats, j3, :
+            ] = self.wavelet_op.mean(
+                data_l1m[j3][:, channels_with_auto_stats, :, :, :],
+            ).to(
+                dtype=data_st.S1.dtype  # cast to complex if needed
+            )  # (Nb,Nc,Nc,L3)
+
+            # cross S1 terms (sub diagonal only)
+            if (
+                compute_cross_matrix * (~bk.eye(Nc, dtype=bool, device=data.device))
+            ).any():
+                data_l1_modulus_square_rooted = data_l1.copy(empty=True)
+                data_l1_modulus_square_rooted.array = data_l1.array * (
+                    data_l1m[j3].array + 1e-8
+                ) ** (
+                    -0.5
+                )  # (Nb,Nc,L,N3)
+
+                self.wavelet_op._compute_and_store_cross_cov(
+                    data_l1_modulus_square_rooted,
+                    data_l1_modulus_square_rooted,
+                    output=data_st.S1[:, :, :, j3, :],
+                    compute_cross_matrix=compute_cross_matrix
+                    * (
+                        ~bk.eye(Nc, dtype=bool, device=data.device)
+                    ),  # remove diagonal wich was computed above with real mean square
+                    redundant_channels=True,  # S1(c1,c2) and S1(c2,c1) are conjugates
+                )  # (Nb,Nc,Nc,L3)
 
             ##############################################################################
             ######################### S2(j3) = Mean(|I*psi3|^2) ##########################
             ##############################################################################
             # auto S2 terms
-            data_st.S2[:, channels_with_auto_stats, channels_with_auto_stats, j3, :] = (
-                self.wavelet_op.square_mean(
-                    data_l1m[j3][:, channels_with_auto_stats, :, :, :]
-                )
-            )  # (Nb, Nc, Nc, L3)
+            data_st.S2[
+                :, channels_with_auto_stats, channels_with_auto_stats, j3, :
+            ] = self.wavelet_op.square_mean(
+                data_l1m[j3][:, channels_with_auto_stats, :, :, :]
+            ).to(
+                dtype=data_st.S2.dtype  # cast to complex if needed
+            )  # (Nb,Nc,Nc,L3)
 
             # cross S2 terms (sub diagonal only)
-            self.wavelet_op._compute_and_store_cross_cov(
-                data_l1,
-                data_l1,
-                output=data_st.S2[:, :, :, j3, :],
-                compute_cross_matrix=compute_cross_matrix
-                * (
-                    ~bk.eye(Nc, dtype=bool, device=data.device)
-                ),  # remove diagonal wich was computed above with real mean square
-                redundant_channels=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
-            )  # (Nb,Nc,Nc,L3)
+            if (
+                compute_cross_matrix * (~bk.eye(Nc, dtype=bool, device=data.device))
+            ).any():
+                self.wavelet_op._compute_and_store_cross_cov(
+                    data_l1,
+                    data_l1,
+                    output=data_st.S2[:, :, :, j3, :],
+                    compute_cross_matrix=compute_cross_matrix
+                    * (
+                        ~bk.eye(Nc, dtype=bool, device=data.device)
+                    ),  # remove diagonal wich was computed above with real mean square
+                    redundant_channels=True,  # S2(c1,c2) and S2(c2,c1) are conjugates
+                )  # (Nb,Nc,Nc,L3)
 
             data_l1m_l2 = {}
             for j2 in range(j3 + 1):
@@ -589,29 +661,49 @@ class ST_Operator:
         if norm == "vanilla":
             pass
         elif norm == "store_ref":
+            if self.mean_ref is not None:
+                print("Replacing existing mean_ref in ST_Op")
+            if self.var_ref is not None:
+                print("Replacing existing var_ref in ST_Op")
             if SC == "ScatCov" and self.S2_ref_sqrt_chan_diag is not None:
                 print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
             if compute_PS and self.PS_ref is not None:
                 print("Replacing existing PS_ref in ST_Op")
+
             data_st.to_norm(norm_type="self")
+
+            self.mean_ref = data_st.mean_ref
+            self.var_ref = data_st.var_ref
             if SC == "ScatCov":
                 self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
                 self.PS_ref = data_st.PS_ref
 
         elif norm == "load_ref":
+            if mean_ref is None:
+                raise Exception(
+                    "mean_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
+                )
+            if var_ref is None:
+                raise Exception(
+                    "var_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
+                )
             if SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
                 raise Exception(
-                    "S2_ref_sqrt_chan_diag should be stored in the ST_Operator"
+                    "S2_ref_sqrt_chan_diag should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
                 )
             if compute_PS and PS_ref is None:
-                raise Exception("PS_ref should be stored in the ST_Operator")
+                raise Exception(
+                    "PS_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
+                )
 
             kwargs = {}
+            kwargs["mean_ref"] = mean_ref
+            kwargs["var_ref"] = var_ref
             if SC == "ScatCov":
-                kwargs["S2_ref_sqrt_chan_diag"] = self.S2_ref_sqrt_chan_diag
+                kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
             if compute_PS:
-                kwargs["PS_ref"] = self.PS_ref
+                kwargs["PS_ref"] = PS_ref
 
             # Appel avec seulement les bons arguments
             data_st.to_norm(norm_type="from_ref", **kwargs)
