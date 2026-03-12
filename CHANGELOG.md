@@ -37,3 +37,11 @@
 - Support for `pbc=False` in FFT, regardless of the defined wavelet type (`gaussian`, `bump_steerable`, etc.).
 - Power spectrum computation for the Kernel class (works with both `pbc=True` and `pbc=False`)
 - Cleaned up user notebook for computing and comparing scattering coefficients.
+
+## [v1.3.0] - 2026-03-12
+### Added
+- Added cross-spectrum calculation
+- Added wavelet satisfying the Littlewood-Paley condition for cross-spectrum calculation (thanks Celia!)
+- Completed the exhaustive user notebook for syntheses
+
+### Fixed
