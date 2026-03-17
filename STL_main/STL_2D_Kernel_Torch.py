@@ -722,7 +722,7 @@ class WaveletOperator2Dkernel_torch:
         return cov
 
     ###########################################################################
-    def standardize(self, data, inplace=False, dim=None):
+    def standardize(self, data, mean_field, inplace=False, dim=None):
         """
         Standardize the data by removing the mean and scaling to unit variance
         on the last two dimensions (Nx, Ny) in real space.
@@ -731,11 +731,21 @@ class WaveletOperator2Dkernel_torch:
         ----------
         - data : STL_2D_Kernel_Torch
             Input data whose array attribute has to be standardized.
+        - mean_field : bool
+            If True, compute mean/std averaged over the batch dimension.
+        - inplace : bool
+            If True, perform the operation in-place on the input data.
+        - dim : tuple
+            Dimensions over which to compute the mean and standard deviation.
 
         Returns
         -------
         - STL_2D_Kernel_Torch
             Standardized data.
+        - torch.Tensor
+            Mean used for standardization.
+        - torch.Tensor            
+            Standard deviation used for standardization.
         """
 
         if dim is None:
@@ -744,14 +754,20 @@ class WaveletOperator2Dkernel_torch:
         l_data = data.copy(empty=False) if not inplace else data
 
         mean = self.mean(l_data)  # [Nb,Nc]
+        if mean_field:
+            mean = mean.mean(dim=0)  # [Nc]
+
         l_data.array = (
             l_data.array - mean[..., None, None]
         )  # centering first because no remove_mean in cov
 
         var = self.cov(l_data, l_data)
+        if mean_field:
+            var = var.mean(dim=0)  # [Nc]
+
         std = torch.sqrt(var)
 
-        l_data.array = l_data.array / std[..., None, None]
+        l_data.array = l_data.array / std[..., None, None]            
 
         return l_data, mean, std
 
@@ -776,6 +792,7 @@ class WaveletOperator2Dkernel_torch:
         """
         l_data = data.copy(empty=False) if not inplace else data
 
+        # No need for mean_field parameter here as the folloowing operation is the same whether mean and std are averaged over the batch dimension or not.
         l_data.array = l_data.array * std[..., None, None] + mean[..., None, None]
 
         return l_data
@@ -1152,14 +1169,13 @@ class CS_operator_2D_Kernel_Torch:
 
         radial_freq = torch.fft.fftshift(torch.sqrt(FX**2 + FY**2))
 
-        k_vals_tensor = torch.tensor(k_vals)
-        diff = torch.abs(radial_freq.unsqueeze(-1) - k_vals_tensor)
+        diff = torch.abs(radial_freq.unsqueeze(-1) - k_vals)
         idx = torch.argmin(diff, dim=-1)
 
-        psi_kernels_tensor = torch.tensor(psi_kernels)  # shape [n_bins, 1000]
-        self.bin_masks = torch.zeros((self.n_bins, N, M))
+        psi_kernels = torch.from_numpy(np.array(psi_kernels))  # shape [n_bins, 1000]
+        self.bin_masks = torch.zeros((self.n_bins, N, M), device=self.device, dtype=self.dtype)
         for j in range(self.n_bins):
-            self.bin_masks[j] = psi_kernels_tensor[j][idx]
+            self.bin_masks[j] = psi_kernels[j][idx]
 
         self.bin_centers = self.min_freq * lam**scales_j
         self.lam = lam

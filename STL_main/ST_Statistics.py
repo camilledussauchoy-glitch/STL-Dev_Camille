@@ -164,7 +164,7 @@ class ST_Statistics:
         )  # [Nb,Nc,Nc,J1,J2,J3,L1,L2,L3]
 
     ########################################
-    def to_norm(self, norm_type=None, S2_ref_sqrt_chan_diag=None, PS_ref=None):
+    def to_norm(self, norm_type=None, S2_ref_sqrt_chan_diag=None, PS_ref=None, norm_batch_mean=True):
         """
         Normalize the ST statistics.
         Parameters
@@ -177,9 +177,10 @@ class ST_Statistics:
         - PS_ref : array
             if self.PS = True
             array of reference Power Spectrum coefficients if "from_ref"
-
+        - norm_batch_mean : bool, default True
+            Used with the "self" normalization type.
+            If True, the reference coefficients are averaged over the batch dimension (dim=0).
         """
-
         # Check the proper ordering
         if self.iso:
             raise Exception("Normalization can only be done before isotropization")
@@ -204,16 +205,12 @@ class ST_Statistics:
                     # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
                     # and store as reference
                     S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
-                    S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag.mean(
-                        dim=0, keepdim=True
-                    )  # mean over batch dimension
-                    self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
+                    self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag if not norm_batch_mean else S2_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
                 self._normalize_scatcov()
 
             if self.compute_PS:
                 PS_ref = self.PS * 1
-                PS_ref = PS_ref.mean(dim=0, keepdim=True)  # mean over batch dimension
-                self.PS_ref = PS_ref
+                self.PS_ref = PS_ref if not norm_batch_mean else PS_ref.mean(dim=0, keepdim=True)
                 self.PS = self.PS / self.PS_ref
 
             # Store normalization parameters

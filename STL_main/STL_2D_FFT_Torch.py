@@ -871,20 +871,30 @@ class WaveletOperator2D_FFT_torch:
             return maskmean(x=cropped_array, dim=dim)
 
     ###########################################################################
-    def standardize(self, data, inplace=False, dim=None):
+    def standardize(self, data, mean_field, inplace=False, dim=None):
         """
         Standardize the data by removing the mean and scaling to unit variance
         on the last two dimensions (Nx, Ny) in real space.
 
         Parameters
         ----------
-        - data : STL_2D_FFT_Torch
+        - data : STL_2D_Kernel_Torch
             Input data whose array attribute has to be standardized.
+        - mean_field : bool
+            If True, compute mean/std averaged over the batch dimension.
+        - inplace : bool
+            If True, perform the operation in-place on the input data.
+        - dim : tuple
+            Dimensions over which to compute the mean and standard deviation.
 
         Returns
         -------
-        - STL_2D_FFT_Torch
-            Standardized data.array.
+        - STL_2D_Kernel_Torch
+            Standardized data.
+        - torch.Tensor
+            Mean used for standardization.
+        - torch.Tensor            
+            Standard deviation used for standardization.
         """
 
         if dim is None:
@@ -893,19 +903,20 @@ class WaveletOperator2D_FFT_torch:
         l_data = data.copy(empty=False) if not inplace else data
 
         mean = self.mean(l_data)  # [Nb,Nc]
-
-        # have to first center in real space
-        if data.fourier_status:
-            l_data.set_fourier_status(target_fourier_status=False, inplace=True)
+        if mean_field:
+            mean = mean.mean(dim=0)  # [Nc]
 
         l_data.array = (
             l_data.array - mean[..., None, None]
         )  # centering first because no remove_mean in cov
 
         var = self.cov(l_data, l_data)
+        if mean_field:
+            var = var.mean(dim=0)  # [Nc]
+
         std = torch.sqrt(var)
 
-        l_data.array = l_data.array / std[..., None, None]
+        l_data.array = l_data.array / std[..., None, None]            
 
         return l_data, mean, std
 
@@ -1272,7 +1283,7 @@ class CS_operator_2D_FFT_torch:
         idx = torch.argmin(diff, dim=-1)
 
         psi_kernels_tensor = torch.tensor(psi_kernels)  # shape [n_bins, 1000]
-        self.bin_masks = torch.zeros((self.n_bins, N, M))
+        self.bin_masks = torch.zeros((self.n_bins, N, M), device=self.device, dtype=self.dtype)
         for j in range(self.n_bins):
             self.bin_masks[j] = psi_kernels_tensor[j][idx]
 

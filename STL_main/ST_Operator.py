@@ -118,8 +118,7 @@ class ST_Operator:
         get_crop_border_size_method=None,
         # Power spectrum computation
         compute_PS=False,
-        PS_ref=None,
-        **kwargs,
+        PS_ref=None
     ):
         """
         Constructor, see details above.
@@ -167,7 +166,7 @@ class ST_Operator:
 
         # Power spectrum computation
         self.compute_PS = compute_PS
-        self.CS_op = data_example.get_CS_op(**kwargs)
+        self.CS_op = data_example.get_CS_op()
         self.n_bins = self.CS_op.n_bins
         self.PS_ref = PS_ref
 
@@ -214,6 +213,7 @@ class ST_Operator:
         has_fewer_convolutions=None,
         norm=None,
         S2_ref_sqrt_chan_diag=None,
+        norm_batch_mean=False,
         iso=None,
         angular_ft=None,
         scale_ft=None,
@@ -222,7 +222,7 @@ class ST_Operator:
         compute_PS=None,
         PS_ref=None,
         compute_cross_matrix=None,
-        compute_cross_spectrum_matrix=None,
+        compute_cross_spectrum_matrix=None
     ):
         """
         Compute the Scattering Transform (ST) of data, which are either stored
@@ -304,10 +304,13 @@ class ST_Operator:
         # General Initialization
         ########################################
 
-        # Consistency checks
-        if getattr(self.wavelet_op, "N0", data.N0) != data.N0:
-            raise Exception(
-                "Wavelet operator of the scattering operator and data should have same N0"
+        # Consistency check
+        data_J = data.get_wavelet_op().J
+
+        if self.J > data_J:
+            raise ValueError(
+                f"Incompatible J: ST operator initialized with J={self.J}, "
+                f"but data only supports J up to {data_J}."
             )
 
         # Local value for the wavelet transform parameters
@@ -618,7 +621,7 @@ class ST_Operator:
                 print("Replacing existing PS_ref in ST_Op")
 
             # Check if some auto-stats are not computed
-            missing_auto = np.where(~np.diag(compute_cross_matrix))[0]
+            missing_auto = (~compute_cross_matrix.diagonal()).nonzero(as_tuple=True)[0]
 
             if len(missing_auto) > 0:
                 warnings.warn(
@@ -629,7 +632,7 @@ class ST_Operator:
                     stacklevel=2,
                 )
 
-            data_st.to_norm(norm_type="self")
+            data_st.to_norm(norm_type="self", norm_batch_mean=norm_batch_mean)
             if SC == "ScatCov":
                 self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
@@ -662,6 +665,6 @@ class ST_Operator:
             data_st.to_scale_ft(self.harmonics_scale, self.dj, self.harmonics_angle)
 
         if flatten:
-            data_st.to_flatten(mask_st)
+            data_st.to_flatten(mask_st, mean_along_batch=batch_mean)
 
         return data_st
