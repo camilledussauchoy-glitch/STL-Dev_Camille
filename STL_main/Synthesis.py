@@ -289,29 +289,31 @@ def synthesize_from_maps(
 
         data_running = data_target.__class__(array=running_mask, pbc=pbc_running)
 
-    # Get ST operators
-    data_target_J = data_target.get_wavelet_op().J  
-    data_running_J = data_running.get_wavelet_op().J
+    # Select J used for synthesis
+    J_target = data_target.get_wavelet_op().J - (not data_target.pbc)
+    J_running = data_running.get_wavelet_op().J - (not data_running.pbc)
+    J = min(J_target, J_running)
 
-    if not data_target.pbc or not data_running.pbc:
-        # remove one dyadic scale if not periodic for better results
-        data_target_J -= 1
-        data_running_J -= 1
+    if J_target != J_running:
+        print(f"Warning: target.J = {J_target}, running.J = {J_running}. Synthesis will use J = {J}.")
 
-    J = min(data_target_J, data_running_J)
-
-    if data_target_J != data_running_J:
-        print(
-            f"Warning: target.J = {data_target_J}, running.J = {data_running_J}. "
-            f"Synthesis will use J = {J}."
-        )
-
+    # Get scattering operators for target and running data with selected J
     st_op_target = data_target.get_ST_op(J=J)
     st_op_running = data_running.get_ST_op(J=J, replace_nan_value=None)
 
+    # Set default optimization parameters and update with user-provided values
+    optim_params = dict(
+        max_iter=50,
+        lr=1.0,
+        history_size=50,
+        print_iter=10,
+        verbose=True,
+        seed=26
+    )
+    optim_params.update(optim_kwargs)
 
     # Run optimization
-    u_opt, histo = optimize_scattering_LBFGS(
+    u_opt, _ = optimize_scattering_LBFGS(
         target=data_target, 
         st_op_target=st_op_target,
         st_op_running=st_op_running,
@@ -322,13 +324,7 @@ def synthesize_from_maps(
         compute_cross_spectrum_matrix=compute_cross_spectrum_matrix,    
         nbatch=nbatch,
         mean_field=mean_field,
-        max_iter=50,
-        lr=1.0,
-        history_size=50,
-        print_iter=10,
-        verbose=True,
-        seed=26,
-        **optim_kwargs
+        **optim_params
     )
 
-    return u_opt, histo
+    return u_opt
