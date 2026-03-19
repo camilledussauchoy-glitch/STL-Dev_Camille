@@ -757,7 +757,7 @@ class WaveletOperator2Dkernel_torch:
             Standardized data.
         - torch.Tensor
             Mean used for standardization.
-        - torch.Tensor            
+        - torch.Tensor
             Standard deviation used for standardization.
         """
 
@@ -780,7 +780,7 @@ class WaveletOperator2Dkernel_torch:
 
         std = torch.sqrt(var)
 
-        l_data.array = l_data.array / std[..., None, None]            
+        l_data.array = l_data.array / std[..., None, None]
 
         return l_data, mean, std
 
@@ -1188,7 +1188,9 @@ class CS_operator_2D_Kernel_Torch:
         idx = torch.argmin(diff, dim=-1)
 
         psi_kernels = torch.from_numpy(np.array(psi_kernels))  # shape [n_bins, 1000]
-        self.bin_masks = torch.zeros((self.n_bins, N, M), device=self.device, dtype=self.dtype)
+        self.bin_masks = torch.zeros(
+            (self.n_bins, N, M), device=self.device, dtype=self.dtype
+        )
         for j in range(self.n_bins):
             self.bin_masks[j] = psi_kernels[j][idx]
 

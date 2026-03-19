@@ -175,7 +175,8 @@ class ST_Statistics:
         S2_ref_sqrt_chan_diag=None,
         PS_ref=None,
         var_ref=None,
-        norm_batch_mean=True):
+        norm_batch_mean=True,
+    ):
         """
         Normalize the ST statistics.
         Parameters
@@ -220,11 +221,17 @@ class ST_Statistics:
                     # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
                     # and store as reference
                     S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
-                    self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag if not norm_batch_mean else S2_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
+                    self.S2_ref_sqrt_chan_diag = (
+                        S2_ref_sqrt_chan_diag
+                        if not norm_batch_mean
+                        else S2_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
+                    )
 
             if self.compute_PS:
                 PS_ref = self.PS * 1
-                self.PS_ref = PS_ref if not norm_batch_mean else PS_ref.mean(dim=0, keepdim=True)
+                self.PS_ref = (
+                    PS_ref if not norm_batch_mean else PS_ref.mean(dim=0, keepdim=True)
+                )
                 self.PS = self.PS / self.PS_ref
 
             # Store normalization parameters
@@ -237,7 +244,7 @@ class ST_Statistics:
                 # store as reference
                 self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
 
-        # Perform normalization and store reference 
+        # Perform normalization and store reference
         self.var = self.var / var_ref
         self.var_ref = var_ref
 

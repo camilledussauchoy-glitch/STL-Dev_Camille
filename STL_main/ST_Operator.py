@@ -157,7 +157,7 @@ class ST_Operator:
 
         # Additional transform/compression related parameters
         self.norm = norm
-        self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag  
+        self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
         self.var_ref = var_ref
         self.iso = iso
         self.angular_ft = angular_ft
@@ -228,7 +228,7 @@ class ST_Operator:
         PS_ref=None,
         var_ref=None,
         compute_cross_matrix=None,
-        compute_cross_spectrum_matrix=None
+        compute_cross_spectrum_matrix=None,
     ):
         """
         Compute the Scattering Transform (ST) of data, which are either stored
@@ -684,7 +684,6 @@ class ST_Operator:
                 print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
             if compute_PS and self.PS_ref is not None:
                 print("Replacing existing PS_ref in ST_Op")
-
 
             # Check if some auto-stats are not computed
             missing_auto = (~compute_cross_matrix.diagonal()).nonzero(as_tuple=True)[0]
