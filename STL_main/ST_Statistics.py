@@ -149,11 +149,16 @@ class ST_Statistics:
         using self.S2_ref_sqrt_chan_diag
         """
 
-        self.S1 = self.S1 / self.S2_ref_sqrt_chan_diag  # [Nb,Nc,J1,L1]
+        # self.S1 = self.S1 / self.S2_ref_sqrt_chan_diag  # [Nb,Nc,J1,L1]
+        self.S1 = self.S1 / (
+            self.S2_ref_sqrt_chan_diag[:, :, None]
+            * self.S2_ref_sqrt_chan_diag[:, None, :]
+        )  # [Nb,Nc,Nc,J1,L1]
         self.S2 = self.S2 / (
             self.S2_ref_sqrt_chan_diag[:, :, None]
             * self.S2_ref_sqrt_chan_diag[:, None, :]
         )  # [Nb,Nc,Nc,J1,L1]
+
         self.S3 = self.S3 / (
             self.S2_ref_sqrt_chan_diag[:, :, None, :, None, :, None]
             * self.S2_ref_sqrt_chan_diag[:, None, :, None, :, None, :]
@@ -164,7 +169,13 @@ class ST_Statistics:
         )  # [Nb,Nc,Nc,J1,J2,J3,L1,L2,L3]
 
     ########################################
-    def to_norm(self, norm_type=None, S2_ref_sqrt_chan_diag=None, PS_ref=None, norm_batch_mean=True):
+    def to_norm(
+        self,
+        norm_type=None,
+        S2_ref_sqrt_chan_diag=None,
+        PS_ref=None,
+        var_ref=None,
+        norm_batch_mean=True):
         """
         Normalize the ST statistics.
         Parameters
@@ -177,6 +188,8 @@ class ST_Statistics:
         - PS_ref : array
             if self.PS = True
             array of reference Power Spectrum coefficients if "from_ref"
+        - var_ref : array
+            array of reference variance if "from_ref"
         - norm_batch_mean : bool, default True
             Used with the "self" normalization type.
             If True, the reference coefficients are averaged over the batch dimension (dim=0).
@@ -191,22 +204,23 @@ class ST_Statistics:
 
         # Leave the function if no normalization is required
         if norm_type is None:
-            pass
+            raise Exception("No normalization type specified")
+
+        # Verifications
+        if self.norm:
+            raise Exception("ST statistics are already normalized")
 
         # Store_ref normalization
         elif norm_type == "self":
-            # Verifications
-            if self.norm:
-                raise Exception("ST statistics are already normalized")
 
-            # Perform normalization and store reference
+            var_ref = self.var * 1.0
+
             if self.SC == "ScatCov":
                 if self.S2_ref_sqrt_chan_diag is None:
                     # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
                     # and store as reference
                     S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
                     self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag if not norm_batch_mean else S2_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
-                self._normalize_scatcov()
 
             if self.compute_PS:
                 PS_ref = self.PS * 1
@@ -218,25 +232,26 @@ class ST_Statistics:
 
         # Load_ref normalization
         elif norm_type == "from_ref":
-            # Verifications
-            if self.norm:
-                raise Exception("ST statistics are already normalized")
-            if self.SC == "ScatCov" and S2_ref_sqrt_chan_diag is None:
-                raise Exception("S2_ref_sqrt_chan_diag should be given")
-            if self.compute_PS and PS_ref is None:
-                raise Exception("PS_ref should be given")
 
             if self.SC == "ScatCov":
                 # store as reference
                 self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
-                self._normalize_scatcov()
 
-            if self.compute_PS:
-                self.PS = self.PS / PS_ref
-                self.PS_ref = PS_ref
+        # Perform normalization and store reference 
+        self.var = self.var / var_ref
+        self.var_ref = var_ref
 
-            # Store normalization parameters
-            self.norm = True
+        """
+        if self.SC == "ScatCov":
+            self._normalize_scatcov()
+        """
+
+        if self.compute_PS:
+            self.PS = self.PS / PS_ref
+            self.PS_ref = PS_ref
+
+        # Store normalization parameters
+        self.norm = True
 
         return self
 
@@ -266,7 +281,8 @@ class ST_Statistics:
             # S1 and S2
             # self.S1 = bk.mean(self.S1.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
             # self.S1 = bk.mean(self.S2.mean, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
-            self.S1 = bk.mean(self.S1, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            #            self.S1 = bk.mean(self.S1, -1)  # (Nb,Nc,J,L) -> (Nb,Nc,J)
+            self.S1 = bk.mean(self.S1, -1)  # (Nb,Nc,Nc,J,L) -> (Nb,Nc,Nc,J)
             self.S2 = bk.mean(self.S2, -1)  # (Nb,Nc,Nc,J,L) -> (Nb,Nc,Nc,J)
 
             # S3 and S4
@@ -489,7 +505,6 @@ class ST_Statistics:
         # Collect all statistics into a list
         stats = [self.mean, self.var]  # Always include mean and variance
 
-        # Collect all S1,S2,S3,S4 into a list
         if self.SC == "ScatCov":
             stats += [self.S1, self.S2, self.S3, self.S4]
 

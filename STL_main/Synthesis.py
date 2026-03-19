@@ -39,7 +39,7 @@ class ScatteringMatchModel(nn.Module):
 
         self.u.requires_grad_()
 
-        if self.mask_full_res is not None:
+        if False:  # self.mask_full_res is not None:
 
             def freeze_hook(grad):
                 return grad * (~self.mask_full_res.array)
@@ -149,8 +149,9 @@ def optimize_scattering_LBFGS(
     target_stats = target_stats[target_coeffs_mask]
     print("Synthesis on {:} ST coefficients".format(target_coeffs_mask.sum().item()))
 
-    # reference mean, var and S2 for running normalization
+    # reference to running normalization
     st_op_running.S2_ref_sqrt_chan_diag = st_op_target.S2_ref_sqrt_chan_diag
+    st_op_running.var_ref = st_op_target.var_ref
     if  compute_PS:
         st_op_running.PS_ref = st_op_target.PS_ref  
 

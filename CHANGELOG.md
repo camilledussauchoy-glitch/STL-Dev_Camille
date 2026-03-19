@@ -38,11 +38,16 @@
 - Power spectrum computation for the Kernel class (works with both `pbc=True` and `pbc=False`)
 - Cleaned up user notebook for computing and comparing scattering coefficients.
 
-## [v1.3.0] - 2026-03-12
+
+## [v1.3.0] - 2026-03-19
 ### Added
 - Added cross-spectrum calculation
 - Added wavelet satisfying the Littlewood-Paley condition for cross-spectrum calculation (thanks Celia!)
 - Completed the exhaustive user notebook for syntheses
+- Added a user-friendly wrapper for synthesis from maps (see certification notebook for usage)
+  - Can synthesize maps of different sizes using the `running_shape` argument
+  - Can synthesize by averaging over the batch dimension using the `mean_field` argument
 
 ### Fixed
-- Added the WType argument to the constructor of the Wavelet operator in the STL_2D_Kernel_Torch dataclass. Currently available: Morlet
+- Added the `WType` argument to the constructor of the Wavelet operator in the `STL_2D_Kernel_Torch` dataclass. Currently available: Morlet
+- Removed the `mean_ref` variable to avoid numerical instability
