@@ -131,17 +131,21 @@ class ST_Statistics:
 
         # Power spectrum computation
         self.compute_PS = compute_PS
+        self.PS_ref_sqrt_chan_diag = None
 
     @staticmethod
-    def _get_sqrt_chan_diag(S2_ref):
+    def _get_sqrt_chan_diag(stat_ref):
         """
-        Prepare S2_ref that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
+        Prepare S2_ref that has shape [Nb,Nc,Nc,J,L] or PS_ref that has shape [Nb,Nc,Nc,n_bins]
+        by keeping its diagonal and applying sqrt
         """
-        S2_ref_chan_diag = S2_ref.diagonal(dim1=1, dim2=2).movedim(
+        stat_ref_chan_diag = stat_ref.diagonal(dim1=1, dim2=2).movedim(
             -1, 1
-        )  # [Nb,Nc,J,L] retrieves S2_ref diagonal over channels
-        S2_ref_sqrt_chan_diag = bk.sqrt(S2_ref_chan_diag)  # [Nb,Nc,J,L]
-        return S2_ref_sqrt_chan_diag
+        )  # [Nb,Nc,J,L] or [Nb,Nc,n_bins] for S2 or PS
+        stat_ref_sqrt_chan_diag = bk.sqrt(
+            stat_ref_chan_diag
+        )  # [Nb,Nc,J,L] or [Nb,Nc,n_bins]
+        return stat_ref_sqrt_chan_diag
 
     def _normalize_scatcov(self):
         """
@@ -173,7 +177,7 @@ class ST_Statistics:
         self,
         norm_type=None,
         S2_ref_sqrt_chan_diag=None,
-        PS_ref=None,
+        PS_ref_sqrt_chan_diag=None,
         var_ref=None,
         norm_batch_mean=True,
     ):
@@ -186,7 +190,7 @@ class ST_Statistics:
         - S2_ref_sqrt_chan_diag : array
             if self.SC = "ScatCov"
             array of reference S2 coefficients if "from_ref" (normalized by sqrt of diagonal over channels)
-        - PS_ref : array
+        - PS_ref_sqrt_chan_diag : array
             if self.PS = True
             array of reference Power Spectrum coefficients if "from_ref"
         - var_ref : array
@@ -215,6 +219,9 @@ class ST_Statistics:
         elif norm_type == "self":
 
             var_ref = self.var * 1.0
+            self.var_ref = (
+                var_ref if not norm_batch_mean else var_ref.mean(dim=0, keepdim=True)
+            )
 
             if self.SC == "ScatCov":
                 if self.S2_ref_sqrt_chan_diag is None:
@@ -228,34 +235,49 @@ class ST_Statistics:
                     )
 
             if self.compute_PS:
-                PS_ref = self.PS * 1
-                self.PS_ref = (
-                    PS_ref if not norm_batch_mean else PS_ref.mean(dim=0, keepdim=True)
-                )
-                self.PS = self.PS / self.PS_ref
-
-            # Store normalization parameters
-            self.norm = True
+                if self.PS_ref_sqrt_chan_diag is None:
+                    # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
+                    # and store as reference
+                    PS_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.PS)
+                    self.PS_ref_sqrt_chan_diag = (
+                        PS_ref_sqrt_chan_diag
+                        if not norm_batch_mean
+                        else PS_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
+                    )
 
         # Load_ref normalization
         elif norm_type == "from_ref":
 
+            self.var_ref = (
+                var_ref if not norm_batch_mean else var_ref.mean(dim=0, keepdim=True)
+            )
+
             if self.SC == "ScatCov":
                 # store as reference
-                self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
+                self.S2_ref_sqrt_chan_diag = (
+                    S2_ref_sqrt_chan_diag
+                    if not norm_batch_mean
+                    else S2_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
+                )
+
+            if self.compute_PS:
+                self.PS_ref_sqrt_chan_diag = (
+                    PS_ref_sqrt_chan_diag
+                    if not norm_batch_mean
+                    else PS_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
+                )
 
         # Perform normalization and store reference
-        self.var = self.var / var_ref
-        self.var_ref = var_ref
+        self.var = self.var / self.var_ref
 
-        """
         if self.SC == "ScatCov":
             self._normalize_scatcov()
-        """
 
         if self.compute_PS:
-            self.PS = self.PS / PS_ref
-            self.PS_ref = PS_ref
+            self.PS = self.PS / (
+                self.PS_ref_sqrt_chan_diag[:, :, None, :]
+                * self.PS_ref_sqrt_chan_diag[:, None, :, :]
+            )  # [Nb, Nc, Nc, n_bins]
 
         # Store normalization parameters
         self.norm = True

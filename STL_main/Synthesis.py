@@ -21,6 +21,8 @@ class ScatteringMatchModel(nn.Module):
         pbc,
         init_shape,
         compute_cross_matrix,
+        compute_PS,
+        compute_cross_spectrum_matrix,
         mean_field,
         device,
         dtype,
@@ -32,6 +34,8 @@ class ScatteringMatchModel(nn.Module):
         self.init_shape = init_shape
         self.mask_full_res = st_op.wavelet_op.mask_full_res
         self.compute_cross_matrix = compute_cross_matrix
+        self.compute_PS = compute_PS
+        self.compute_cross_spectrum_matrix = compute_cross_spectrum_matrix
         self.mean_field = mean_field
 
         # Learnable field u
@@ -60,7 +64,11 @@ class ScatteringMatchModel(nn.Module):
     def forward(self):
         DC_u = self.DataClass(self.u, pbc=self.pbc)
         st_u = self.st_op.apply(
-            DC_u, compute_cross_matrix=self.compute_cross_matrix, norm="load_ref"
+            DC_u,
+            compute_cross_matrix=self.compute_cross_matrix,
+            compute_PS=self.compute_PS,
+            compute_cross_spectrum_matrix=self.compute_cross_spectrum_matrix,
+            norm="load_ref",
         )
         s_flat_u = st_u.to_flatten(mean_along_batch=self.mean_field, keepnans=True)
         return s_flat_u
@@ -73,7 +81,7 @@ def optimize_scattering_LBFGS(
     pbc_running=True,
     running_shape=None,
     compute_cross_matrix=None,
-    compute_PS=None,
+    compute_PS=False,
     compute_cross_spectrum_matrix=None,
     nbatch=1,
     mean_field=True,
@@ -150,6 +158,7 @@ def optimize_scattering_LBFGS(
             norm="store_ref",
             norm_batch_mean=mean_field,
         ).to_flatten(mean_along_batch=mean_field, keepnans=True)
+
     target_stats = target_stats.detach()
     target_coeffs_mask = ~target_stats.isnan()
     target_stats = target_stats[target_coeffs_mask]
@@ -159,7 +168,7 @@ def optimize_scattering_LBFGS(
     st_op_running.S2_ref_sqrt_chan_diag = st_op_target.S2_ref_sqrt_chan_diag
     st_op_running.var_ref = st_op_target.var_ref
     if compute_PS:
-        st_op_running.PS_ref = st_op_target.PS_ref
+        st_op_running.PS_ref_sqrt_chan_diag = st_op_target.PS_ref_sqrt_chan_diag
 
     # Model with learnable u
     model = ScatteringMatchModel(
@@ -168,6 +177,8 @@ def optimize_scattering_LBFGS(
         pbc=pbc_running,
         init_shape=init_shape,
         compute_cross_matrix=compute_cross_matrix,
+        compute_PS=compute_PS,
+        compute_cross_spectrum_matrix=compute_cross_spectrum_matrix,
         mean_field=mean_field,
         device=device,
         dtype=dtype,

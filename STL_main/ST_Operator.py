@@ -119,7 +119,7 @@ class ST_Operator:
         get_crop_border_size_method=None,
         # Power spectrum computation
         compute_PS=False,
-        PS_ref=None,
+        PS_ref_sqrt_chan_diag=None,
         var_ref=None,
     ):
         """
@@ -173,7 +173,7 @@ class ST_Operator:
         self.compute_PS = compute_PS
         self.CS_op = data_example.get_CS_op()
         self.n_bins = self.CS_op.n_bins
-        self.PS_ref = PS_ref
+        self.PS_ref_sqrt_chan_diag = PS_ref_sqrt_chan_diag
 
     ########################################
     @classmethod
@@ -225,7 +225,7 @@ class ST_Operator:
         flatten=None,
         mask_st=None,
         compute_PS=None,
-        PS_ref=None,
+        PS_ref_sqrt_chan_diag=None,
         var_ref=None,
         compute_cross_matrix=None,
         compute_cross_spectrum_matrix=None,
@@ -281,7 +281,7 @@ class ST_Operator:
         # Power spectrum computation
         - compute_PS : bool
             whether to compute power spectrum coefficients in addition to ST statistics
-        - PS_ref : array
+        - PS_ref_sqrt_chan_diag : array
             array of reference PS coefficients
         - compute_cross_spectrum_matrix : ndarray of bool (Default: None which is auto-statistics only)
             Upper triangular matrix with shape (Nc,Nc), which determines pairs of channels for which to compute cross-spectrum.
@@ -345,13 +345,14 @@ class ST_Operator:
                 ), "S2_ref_sqrt_chan_diag should not be provided when norm='store_ref'"
             if compute_PS:
                 assert (
-                    PS_ref is None
-                ), "PS_ref should not be provided when norm='store_ref'"
+                    PS_ref_sqrt_chan_diag is None
+                ), "PS_ref_sqrt_chan_diag should not be provided when norm='store_ref'"
         S2_ref_sqrt_chan_diag = (
             self.S2_ref_sqrt_chan_diag
             if S2_ref_sqrt_chan_diag is None
             else S2_ref_sqrt_chan_diag
         )
+
         iso = self.iso if iso is None else iso
         angular_ft = self.angular_ft if angular_ft is None else angular_ft
         scale_ft = self.scale_ft if scale_ft is None else scale_ft
@@ -359,7 +360,11 @@ class ST_Operator:
         mask_st = self.mask_st if mask_st is None else mask_st
 
         compute_PS = self.compute_PS if compute_PS is None else compute_PS
-        PS_ref = self.PS_ref if PS_ref is None else PS_ref
+        PS_ref_sqrt_chan_diag = (
+            self.PS_ref_sqrt_chan_diag
+            if PS_ref_sqrt_chan_diag is None
+            else PS_ref_sqrt_chan_diag
+        )
 
         var_ref = self.var_ref if var_ref is None else var_ref
 
@@ -428,7 +433,6 @@ class ST_Operator:
                 bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
                 + bk.nan
             )
-            import torch
 
             data_st.S4 = (
                 bk.zeros(
@@ -472,7 +476,6 @@ class ST_Operator:
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
 
             if False and self.wavelet_op.mask_full_res is not None:
-                import torch
 
                 assert torch.all(
                     data_l1m[j3].array.isnan() == self.layer1_mask[j3].array
@@ -682,8 +685,8 @@ class ST_Operator:
                 print("Replacing existing var_ref in ST_Op")
             if SC == "ScatCov" and self.S2_ref_sqrt_chan_diag is not None:
                 print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
-            if compute_PS and self.PS_ref is not None:
-                print("Replacing existing PS_ref in ST_Op")
+            if compute_PS and self.PS_ref_sqrt_chan_diag is not None:
+                print("Replacing existing PS_ref_sqrt_chan_diag in ST_Op")
 
             # Check if some auto-stats are not computed
             missing_auto = (~compute_cross_matrix.diagonal()).nonzero(as_tuple=True)[0]
@@ -703,7 +706,7 @@ class ST_Operator:
             if SC == "ScatCov":
                 self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
-                self.PS_ref = data_st.PS_ref
+                self.PS_ref_sqrt_chan_diag = data_st.PS_ref_sqrt_chan_diag
 
         elif norm == "load_ref":
             if var_ref is None:
@@ -714,9 +717,9 @@ class ST_Operator:
                 raise Exception(
                     "S2_ref_sqrt_chan_diag should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
                 )
-            if compute_PS and PS_ref is None:
+            if compute_PS and PS_ref_sqrt_chan_diag is None:
                 raise Exception(
-                    "PS_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
+                    "PS_ref_sqrt_chan_diag should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
                 )
 
             kwargs = {}
@@ -724,7 +727,7 @@ class ST_Operator:
             if SC == "ScatCov":
                 kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
             if compute_PS:
-                kwargs["PS_ref"] = PS_ref
+                kwargs["PS_ref_sqrt_chan_diag"] = PS_ref_sqrt_chan_diag
 
             # Appel avec seulement les bons arguments
             data_st.to_norm(norm_type="from_ref", **kwargs)
