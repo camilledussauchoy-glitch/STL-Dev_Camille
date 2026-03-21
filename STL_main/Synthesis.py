@@ -22,7 +22,6 @@ class ScatteringMatchModel(nn.Module):
         init_shape,
         compute_cross_matrix,
         compute_PS,
-        compute_cross_spectrum_matrix,
         mean_field,
         device,
         dtype,
@@ -35,7 +34,6 @@ class ScatteringMatchModel(nn.Module):
         self.mask_full_res = st_op.wavelet_op.mask_full_res
         self.compute_cross_matrix = compute_cross_matrix
         self.compute_PS = compute_PS
-        self.compute_cross_spectrum_matrix = compute_cross_spectrum_matrix
         self.mean_field = mean_field
 
         # Learnable field u
@@ -67,7 +65,6 @@ class ScatteringMatchModel(nn.Module):
             DC_u,
             compute_cross_matrix=self.compute_cross_matrix,
             compute_PS=self.compute_PS,
-            compute_cross_spectrum_matrix=self.compute_cross_spectrum_matrix,
             norm="load_ref",
         )
         s_flat_u = st_u.to_flatten(mean_along_batch=self.mean_field, keepnans=True)
@@ -82,7 +79,6 @@ def optimize_scattering_LBFGS(
     running_shape=None,
     compute_cross_matrix=None,
     compute_PS=False,
-    compute_cross_spectrum_matrix=None,
     nbatch=1,
     mean_field=True,
     max_iter=100,
@@ -154,7 +150,6 @@ def optimize_scattering_LBFGS(
             l_target,
             compute_cross_matrix=compute_cross_matrix,
             compute_PS=compute_PS,
-            compute_cross_spectrum_matrix=compute_cross_spectrum_matrix,
             norm="store_ref",
             norm_batch_mean=mean_field,
         ).to_flatten(mean_along_batch=mean_field, keepnans=True)
@@ -178,7 +173,6 @@ def optimize_scattering_LBFGS(
         init_shape=init_shape,
         compute_cross_matrix=compute_cross_matrix,
         compute_PS=compute_PS,
-        compute_cross_spectrum_matrix=compute_cross_spectrum_matrix,
         mean_field=mean_field,
         device=device,
         dtype=dtype,
@@ -269,8 +263,6 @@ def synthesize_from_maps(
     running_mask=None,
     mean_field=True,
     compute_cross_matrix=None,
-    compute_PS=None,
-    compute_cross_spectrum_matrix=None,
     **optim_kwargs,
 ):
     """
@@ -319,6 +311,18 @@ def synthesize_from_maps(
     st_op_target = data_target.get_ST_op(J=J)
     st_op_running = data_running.get_ST_op(J=J, replace_nan_value=None)
 
+    # Disable power spectrum optimization if NaN values are present in target and/or running data
+    target_has_nan = data_target.array.isnan().any()
+    running_has_nan = data_running.array.isnan().any()
+
+    if target_has_nan or running_has_nan:
+        print(
+            "⚠️ Warning: NaN detected in target and/or running data.\n"
+            "Power spectrum optimization is disabled because its computation is not yet implemented for NaN values in any dataclass. \n"
+        )
+
+    compute_PS = not (target_has_nan or running_has_nan)
+
     # Set default optimization parameters and update with user-provided values
     optim_params = dict(
         max_iter=50, lr=1.0, history_size=50, print_iter=10, verbose=True, seed=26
@@ -334,7 +338,6 @@ def synthesize_from_maps(
         pbc_running=pbc_running,
         compute_cross_matrix=compute_cross_matrix,
         compute_PS=compute_PS,
-        compute_cross_spectrum_matrix=compute_cross_spectrum_matrix,
         nbatch=nbatch,
         mean_field=mean_field,
         **optim_params,

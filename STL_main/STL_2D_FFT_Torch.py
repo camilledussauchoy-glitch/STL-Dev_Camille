@@ -1278,16 +1278,15 @@ class CS_operator_2D_FFT_torch:
 
         radial_freq = torch.fft.fftshift(torch.sqrt(FX**2 + FY**2))
 
-        k_vals_tensor = torch.tensor(k_vals)
-        diff = torch.abs(radial_freq.unsqueeze(-1) - k_vals_tensor)
+        diff = torch.abs(radial_freq.unsqueeze(-1) - k_vals)
         idx = torch.argmin(diff, dim=-1)
 
-        psi_kernels_tensor = torch.tensor(psi_kernels)  # shape [n_bins, 1000]
+        psi_kernels = torch.from_numpy(np.array(psi_kernels))  # shape [n_bins, 1000]
         self.bin_masks = torch.zeros(
             (self.n_bins, N, M), device=self.device, dtype=self.dtype
         )
         for j in range(self.n_bins):
-            self.bin_masks[j] = psi_kernels_tensor[j][idx]
+            self.bin_masks[j] = psi_kernels[j][idx]
 
         self.bin_centers = self.min_freq * lam**scales_j
         self.lam = lam
@@ -1392,6 +1391,10 @@ class CS_operator_2D_FFT_torch:
             raise Exception("Data shape does not match operator shape")
         if data.dg != 0:
             raise Exception("Data dg must be 0 for power spectrum computation")
+        if data.array.isnan().any():
+            raise ValueError(
+                "Data array contains NaN values, cannot compute power spectrum"
+            )
         if self.device != data.device:
             raise Exception("Data device does not match operator device")
 

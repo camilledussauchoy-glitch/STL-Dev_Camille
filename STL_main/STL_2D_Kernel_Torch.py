@@ -132,7 +132,7 @@ class STL_2D_Kernel_Torch(Base_DataClass):
         if mask_full_res is None:
             if torch.any(self.array.isnan()):
                 mask_full_res = STL_2D_Kernel_Torch(array=self.array.isnan())
-                # print("mask_full_res:", mask_full_res.array)
+
         return WaveletOperator2Dkernel_torch(
             J=J,
             DT=self.DT,
@@ -1297,6 +1297,10 @@ class CS_operator_2D_Kernel_Torch:
             raise Exception("Data shape does not match operator shape")
         if data.dg != 0:
             raise Exception("Data dg must be 0 for power spectrum computation")
+        if data.array.isnan().any():
+            raise ValueError(
+                "Data array contains NaN values, cannot compute power spectrum with fft method."
+            )
         if self.device != data.device:
             raise Exception("Data device does not match operator device")
 
