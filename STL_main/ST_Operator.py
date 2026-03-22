@@ -113,14 +113,15 @@ class ST_Operator:
         dj=None,
         harmonics_angle=None,
         harmonics_scale=None,
+        compute_PS=True,
+        PS_ref_sqrt_chan_diag=None,
+        var_ref=None,
         # Optional wavelet operator args
         WType=None,
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
-        # Power spectrum computation
-        compute_PS=True,
-        PS_ref_sqrt_chan_diag=None,
-        var_ref=None,
+        # Optional power spectrum args
+        n_bins=None,
     ):
         """
         Constructor, see details above.
@@ -171,7 +172,12 @@ class ST_Operator:
 
         # Power spectrum computation
         self.compute_PS = compute_PS
-        self.CS_op = data_example.get_CS_op()
+        cross_spectrum_op_kwargs = {}
+        if n_bins is not None:
+            cross_spectrum_op_kwargs["n_bins"] = n_bins
+        if J is not None:
+            cross_spectrum_op_kwargs["J"] = J
+        self.CS_op = data_example.get_CS_op(**cross_spectrum_op_kwargs)
         self.n_bins = self.CS_op.n_bins
         self.PS_ref_sqrt_chan_diag = PS_ref_sqrt_chan_diag
 

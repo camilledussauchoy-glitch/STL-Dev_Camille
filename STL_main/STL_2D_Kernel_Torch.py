@@ -1121,6 +1121,7 @@ class CS_operator_2D_Kernel_Torch:
         self,
         shape,
         n_bins=None,
+        J=None,
         device=_DEFAULT_DEVICE,
         dtype=_DEFAULT_DTYPE,
         get_crop_border_size_method="flexible_crop",
@@ -1144,6 +1145,7 @@ class CS_operator_2D_Kernel_Torch:
         self.n_bins = (
             int(2 ** (np.log2(min(shape)) - 4)) if n_bins is None else n_bins
         )  # adaptive number of bins
+        self.J = int(np.log2(min(shape))) - 2 if J is None else J
         self.device = _get_device(torch.device(device))
         self.dtype = _get_dtype(dtype=dtype, device=self.device)
         self.get_crop_border_size_method = get_crop_border_size_method
@@ -1160,8 +1162,7 @@ class CS_operator_2D_Kernel_Torch:
 
         N, M = self.shape
 
-        max_scale = int(np.log2(min(N, M))) - 2
-        self.min_freq = 1 / (2.0**max_scale)
+        self.min_freq = 1 / (2.0**self.J)
         self.max_freq = 0.5  # Nyquist frequency
 
         # get radial profil at high resolution
