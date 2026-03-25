@@ -154,7 +154,7 @@ class ST_Statistics:
         """
 
         # self.S1 = self.S1 / self.S2_ref_sqrt_chan_diag  # [Nb,Nc,J1,L1]
-        self.S1 = self.S1 / np.sqrt(
+        self.S1 = self.S1 / bk.sqrt(
             self.S2_ref_sqrt_chan_diag[:, :, None]
             * self.S2_ref_sqrt_chan_diag[:, None, :]
         )  # [Nb,Nc,Nc,J1,L1]
