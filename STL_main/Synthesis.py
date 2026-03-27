@@ -68,7 +68,7 @@ class ScatteringMatchModel(nn.Module):
             norm="load_ref",
             norm_batch_mean=self.mean_field,
         )
-        s_flat_u = st_u.to_flatten(keepnans=True)
+        s_flat_u = st_u.to_flatten(mean_along_batch=self.mean_field, keepnans=True)
         return s_flat_u
 
 
@@ -153,7 +153,7 @@ def optimize_scattering_LBFGS(
             compute_PS=compute_PS,
             norm="store_ref",
             norm_batch_mean=mean_field,
-        ).to_flatten(keepnans=True)
+        ).to_flatten(mean_along_batch=mean_field, keepnans=True)
 
     target_stats = target_stats.detach()
     target_coeffs_mask = ~target_stats.isnan()
@@ -264,6 +264,7 @@ def synthesize_from_maps(
     running_mask=None,
     mean_field=True,
     compute_cross_matrix=None,
+    has_fewer_convolutions=False,
     **optim_kwargs,
 ):
     """
@@ -313,8 +314,15 @@ def synthesize_from_maps(
         )
 
     # Get scattering operators for target and running data with selected J
-    st_op_target = data_target.get_ST_op(J=J, n_bins=n_bins)
-    st_op_running = data_running.get_ST_op(J=J, n_bins=n_bins, replace_nan_value=None)
+    st_op_target = data_target.get_ST_op(
+        J=J, has_fewer_convolutions=has_fewer_convolutions, n_bins=n_bins
+    )
+    st_op_running = data_running.get_ST_op(
+        J=J,
+        has_fewer_convolutions=has_fewer_convolutions,
+        n_bins=n_bins,
+        replace_nan_value=None,
+    )
 
     # Disable power spectrum optimization if NaN values are present in target and/or running data
     target_has_nan = data_target.array.isnan().any()
