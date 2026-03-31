@@ -36,7 +36,9 @@ from STL_main.Synthesis import synthesize_from_maps
 from STL_main.torch_backend import _DEFAULT_DEVICE
 
 device = _DEFAULT_DEVICE
-# assert device.type == "cuda", "GPU is required for this benchmark for memory testing. Please ensure CUDA is properly set up."
+assert (
+    device.type == "cuda"
+), "GPU is required for this benchmark for memory testing. Please ensure CUDA is properly set up."
 
 
 # Run benchmarks in silent mode to avoid cluttering benchmark output
@@ -65,11 +67,11 @@ os.makedirs(base_dir, exist_ok=True)
 datetime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 sys.argv += [
     f"--benchmark_out={os.path.join(base_dir, f'run_{datetime_str}.csv')}",
-    "--benchmark_out_format=console",
+    "--benchmark_out_format=csv",
     "--benchmark_min_warmup_time=0.1",
     "--benchmark_time_unit=s",
     "--benchmark_counters_tabular=true",
-    "--benchmark_repetitions=1",
+    "--benchmark_repetitions=4",
 ]
 
 # Load target image
@@ -84,10 +86,16 @@ data_target_fft = STL_2D_FFT_Torch(im_target, pbc=True)
 # -----------------------------
 # Benchmark registration
 # -----------------------------
-def make_benchmark(name, data_target, has_fewer_convolutions=False):
+def make_benchmark(
+    name, data_target, computation_backend=None, has_fewer_convolutions=False
+):
     @benchmark.register(name=name)
     @benchmark.option.use_manual_time()
-    @benchmark.option.dense_range(start=1, limit=2, step=2)
+    @benchmark.option.arg(1)
+    @benchmark.option.arg(5)
+    @benchmark.option.arg(10)
+    @benchmark.option.arg(15)
+    @benchmark.option.arg(20)
     @benchmark.option.complexity(benchmark.oN)
     def _bench(state):
         nbatch = state.range(0)
@@ -96,20 +104,23 @@ def make_benchmark(name, data_target, has_fewer_convolutions=False):
         while state:
             start_time = time.perf_counter()
             start_memory = torch.cuda.memory_allocated()
+            torch.cuda.reset_peak_memory_stats()
 
             with silent():
                 synthesize_from_maps(
                     data_target,
                     pbc_running=True,
                     nbatch=nbatch,
+                    computation_backend=computation_backend,
                     has_fewer_convolutions=has_fewer_convolutions,
                 )
 
             end_time = time.perf_counter()
             end_memory = torch.cuda.memory_allocated()
+            peak_mem = torch.cuda.max_memory_allocated()
 
             state.set_iteration_time(end_time - start_time)
-            total_memory += end_memory - start_memory
+            total_memory += peak_mem - start_memory
 
         state.counters["Time_per_batch"] = benchmark.Counter(
             nbatch, benchmark.Counter.kIsRate | benchmark.Counter.kInvert
@@ -128,12 +139,6 @@ make_benchmark("FFT_Sihao", data_target_fft, True)
 
 if __name__ == "__main__":
     console_file = os.path.join(base_dir, f"run_{datetime_str}.txt")
-    import os
-
-import sys
-
-if __name__ == "__main__":
-    console_file = os.path.join(base_dir, f"run_{datetime.now():%Y-%m-%d_%H-%M-%S}.txt")
 
     f = open(console_file, "w")
 

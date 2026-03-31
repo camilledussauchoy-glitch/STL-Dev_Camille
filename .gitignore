@@ -4,7 +4,3 @@ __pycache__/
 docs/build/
 *.pyc
 my_tests.ipynb
-
-# Benchmarks
-benchmarks/outputs/
-benchmarks/scripts/run_benchmark.sh

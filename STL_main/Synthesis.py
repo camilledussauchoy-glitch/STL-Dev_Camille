@@ -317,6 +317,7 @@ def synthesize_from_maps(
     st_op_target = data_target.get_ST_op(
         J=J, has_fewer_convolutions=has_fewer_convolutions, n_bins=n_bins
     )
+
     st_op_running = data_running.get_ST_op(
         J=J,
         has_fewer_convolutions=has_fewer_convolutions,
