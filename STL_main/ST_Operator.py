@@ -5,6 +5,8 @@ Main structure of STL
 Tentative proposal by EA
 """
 
+import warnings
+
 import numpy as np
 import torch
 
@@ -111,15 +113,15 @@ class ST_Operator:
         dj=None,
         harmonics_angle=None,
         harmonics_scale=None,
+        compute_PS=True,
+        PS_ref_sqrt_chan_diag=None,
+        var_ref=None,
         # Optional wavelet operator args
         WType=None,
         downsample_nan_weight_threshold=None,
         get_crop_border_size_method=None,
-        # Power spectrum computation
-        compute_PS=False,
-        PS_ref=None,
-        mean_ref=None,
-        var_ref=None,
+        # Optional power spectrum args
+        n_bins=None,
     ):
         """
         Constructor, see details above.
@@ -157,7 +159,6 @@ class ST_Operator:
         # Additional transform/compression related parameters
         self.norm = norm
         self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
-        self.mean_ref = mean_ref
         self.var_ref = var_ref
         self.iso = iso
         self.angular_ft = angular_ft
@@ -170,10 +171,15 @@ class ST_Operator:
         self.harmonics_scale = harmonics_scale
 
         # Power spectrum computation
-        if compute_PS:
-            self.PS_op = data_example.get_PS_op()  # PowerSpectrum_Operator(N0)
         self.compute_PS = compute_PS
-        self.PS_ref = PS_ref
+        cross_spectrum_op_kwargs = {}
+        if n_bins is not None:
+            cross_spectrum_op_kwargs["n_bins"] = n_bins
+        if J is not None:
+            cross_spectrum_op_kwargs["J"] = J
+        self.CS_op = data_example.get_CS_op(**cross_spectrum_op_kwargs)
+        self.n_bins = self.CS_op.n_bins
+        self.PS_ref_sqrt_chan_diag = PS_ref_sqrt_chan_diag
 
     ########################################
     @classmethod
@@ -218,14 +224,14 @@ class ST_Operator:
         has_fewer_convolutions=None,
         norm=None,
         S2_ref_sqrt_chan_diag=None,
+        norm_batch_mean=False,
         iso=None,
         angular_ft=None,
         scale_ft=None,
         flatten=None,
         mask_st=None,
         compute_PS=None,
-        PS_ref=None,
-        mean_ref=None,
+        PS_ref_sqrt_chan_diag=None,
         var_ref=None,
         compute_cross_matrix=None,
     ):
@@ -278,8 +284,10 @@ class ST_Operator:
             mask to be applied when flatten ST statistics
 
         # Power spectrum computation
-        - compute_PS : bool
+        - compute_PS : bool, default True
             whether to compute power spectrum coefficients in addition to ST statistics
+        - PS_ref_sqrt_chan_diag : array
+            array of reference PS coefficients
 
         # Cross statistics computation
         - compute_cross_matrix : ndarray of bool (Default: None which is auto-statistics only)
@@ -301,11 +309,14 @@ class ST_Operator:
         # General Initialization
         ########################################
 
-        # Consistency checks
-        if getattr(self.wavelet_op, "N0", data.N0) != data.N0:
-            raise Exception(
-                "Wavelet operator of the scattering operator and data should have same N0"
-            )
+        # Consistency check
+        # TODO: find a way to retrieve J related to the data without loading the whole wavelet operator
+        # data_J = data.get_wavelet_op().J
+        # if self.J > data_J:
+        #     raise ValueError(
+        #         f"Incompatible J: ST operator initialized with J={self.J}, "
+        #         f"but data only supports J up to {data_J}."
+        #     )
 
         # Local value for the wavelet transform parameters
         N0 = data.N0
@@ -325,9 +336,6 @@ class ST_Operator:
         norm = self.norm if norm is None else norm
         if norm == "store_ref":
             assert (
-                mean_ref is None
-            ), "mean_ref should not be provided when norm='store_ref'"
-            assert (
                 var_ref is None
             ), "var_ref should not be provided when norm='store_ref'"
             if SC == "ScatCov":
@@ -336,13 +344,14 @@ class ST_Operator:
                 ), "S2_ref_sqrt_chan_diag should not be provided when norm='store_ref'"
             if compute_PS:
                 assert (
-                    PS_ref is None
-                ), "PS_ref should not be provided when norm='store_ref'"
+                    PS_ref_sqrt_chan_diag is None
+                ), "PS_ref_sqrt_chan_diag should not be provided when norm='store_ref'"
         S2_ref_sqrt_chan_diag = (
             self.S2_ref_sqrt_chan_diag
             if S2_ref_sqrt_chan_diag is None
             else S2_ref_sqrt_chan_diag
         )
+
         iso = self.iso if iso is None else iso
         angular_ft = self.angular_ft if angular_ft is None else angular_ft
         scale_ft = self.scale_ft if scale_ft is None else scale_ft
@@ -350,9 +359,12 @@ class ST_Operator:
         mask_st = self.mask_st if mask_st is None else mask_st
 
         compute_PS = self.compute_PS if compute_PS is None else compute_PS
-        PS_ref = self.PS_ref if PS_ref is None else PS_ref
+        PS_ref_sqrt_chan_diag = (
+            self.PS_ref_sqrt_chan_diag
+            if PS_ref_sqrt_chan_diag is None
+            else PS_ref_sqrt_chan_diag
+        )
 
-        mean_ref = self.mean_ref if mean_ref is None else mean_ref
         var_ref = self.var_ref if var_ref is None else var_ref
 
         # Put in torch or relevant bk
@@ -368,7 +380,7 @@ class ST_Operator:
         Nb, Nc = data.array.shape[0], data.array.shape[1]
 
         compute_cross_matrix = (
-            bk.ones((Nc, Nc), dtype=bool, device=data.device)
+            torch.triu(bk.ones((Nc, Nc), dtype=bool, device=data.device))
             if compute_cross_matrix is None
             else compute_cross_matrix.to(device=data.device)
         )
@@ -399,7 +411,10 @@ class ST_Operator:
         data_st.var = self.wavelet_op.cov(l_data, l_data).real  # [Nb,Nc]
 
         if compute_PS:
-            data_st.PS = self.PS_op.apply(l_data)
+            data_st.PS = self.CS_op.apply(
+                l_data,
+                compute_cross_spectrum_matrix=compute_cross_matrix,  # Same channel pairs as for ST cross-statistics
+            )
 
         if SC == "ScatCov":
             #            data_st.S1 = bk.zeros((Nb, Nc, J, L)) + bk.nan
@@ -413,7 +428,6 @@ class ST_Operator:
                 bk.zeros((Nb, Nc, Nc, J, J, L, L), dtype=bk._DEFAULT_COMPLEX_DTYPE)
                 + bk.nan
             )
-            import torch
 
             data_st.S4 = (
                 bk.zeros(
@@ -457,7 +471,6 @@ class ST_Operator:
             data_l1m[j3] = data_l1.modulus(inplace=False)  # (Nb,Nc,L,N3)
 
             if False and self.wavelet_op.mask_full_res is not None:
-                import torch
 
                 assert torch.all(
                     data_l1m[j3].array.isnan() == self.layer1_mask[j3].array
@@ -549,7 +562,9 @@ class ST_Operator:
                 if not has_fewer_convolutions:
                     self.wavelet_op._compute_and_store_cross_cov(
                         data_l1m_l2_j2,
-                        data_l1[:, :, None],
+                        data_l1[
+                            :, :, None, :, :, :
+                        ],  # (Nb,Nc,L2,L3,N3) x (Nb,Nc,1,L3,N3)
                         output=data_st.S3[:, :, :, j2, j3, :, :],
                         compute_cross_matrix=compute_cross_matrix,
                         redundant_channels=False,
@@ -612,48 +627,6 @@ class ST_Operator:
                         replace_nan_value=self.replace_nan_value,
                     )  # (Nb,Nc,j3+1,L,N3)
 
-        """
-        # Version to compute ST statistics for STL_FFT_Torch from fullJ mode 
-
-        # --- Compute first convolution and modulus ---
-        print(self.wavelet_op.wavelet_array.shape)
-        data_l1 = self.wavelet_op.apply(data, target_fourier_status=False)  # (Nb,Nc,J,L,N)
-        data_l1m = data_l1.modulus(inplace=True)  # (Nb,Nc,J,L,N)
-
-        # --- Compute S1 and S2 ---
-        data_st.S1 = self.wavelet_op.mean(data_l1m) # (Nb,Nc,J,L)
-        data_st.S2 = self.wavelet_op.mean(data_l1m, square=True)  # (Nb,Nc,J,L)  
-
-        for j3 in range(J):
-            data_l1_tmp = data_l1.copy()  # (Nb,Nc,j3+1,L,N)
-            data_l1m_tmp = data_l1m.copy()
-            # (Nb,Nc,j3+1,L,N)
-            data_l1_tmp.array = data_l1_tmp.array[:, :, : j3 + 1]
-            data_l1m_tmp.array = data_l1m_tmp.array[:, :, : j3 + 1]
-
-            # Downsample at Nj3
-            self.wavelet_op.downsample(data_l1_tmp, j3)  # (Nb,Nc,j3+1,L,N3)
-            self.wavelet_op.downsample(data_l1m_tmp, j3)  # (Nb,Nc,j3+1,L,N3)
-
-            # Compute |I*psi2|*psi3                      #(Nb,Nc,j3+1,L2,L3,N3)
-            data_l1m_l2 = self.wavelet_op.apply(data_l1m_tmp, j=j3)
-
-            for j2 in range(j3 + 1):
-                # S3(j2,j3) = Cov(|I*psi2|*psi3, I*psi3)
-                data_st.S3[:, :, j2, j3, :, :] = self.wavelet_op.cov(
-                    data_l1m_l2[:, :, j2],
-                    data_l1_tmp[:, :, j3, None]
-                )  # (Nb,Nc,L2,L3,N3) x (Nb,Nc,1,L3,N3)
-
-                for j1 in range(j2 + 1):
-                    # S4(j1,j2,j3) = Cov(|I*psi1|*psi3, |I*psi2|*psi3)
-                    data_st.S4[:, :, j1, j2, j3, :, :, :] = self.wavelet_op.cov(
-                        data_l1m_l2[:, :, j1, :, None],
-                        data_l1m_l2[:, :, j2, None, :]
-                    )  # (Nb,Nc,L1, 1,L3,N3) x (Nb,Nc, 1,L2,L3,N3)
-
-        """
-
         ########################################
         # Additional transform/compression
         ########################################
@@ -661,29 +634,34 @@ class ST_Operator:
         if norm == "vanilla":
             pass
         elif norm == "store_ref":
-            if self.mean_ref is not None:
-                print("Replacing existing mean_ref in ST_Op")
             if self.var_ref is not None:
                 print("Replacing existing var_ref in ST_Op")
             if SC == "ScatCov" and self.S2_ref_sqrt_chan_diag is not None:
                 print("Replacing existing S2_ref_sqrt_chan_diag in ST_Op")
-            if compute_PS and self.PS_ref is not None:
-                print("Replacing existing PS_ref in ST_Op")
+            if compute_PS and self.PS_ref_sqrt_chan_diag is not None:
+                print("Replacing existing PS_ref_sqrt_chan_diag in ST_Op")
 
-            data_st.to_norm(norm_type="self")
+            # Check if some auto-stats are not computed
+            missing_auto = (~compute_cross_matrix.diagonal()).nonzero(as_tuple=True)[0]
 
-            self.mean_ref = data_st.mean_ref
+            if len(missing_auto) > 0:
+                warnings.warn(
+                    f"S2 auto-stats are not computed for channels {(missing_auto + 1).tolist()}. "
+                    "Using norm='store_ref' normalizes with sqrt(S2 auto-stats) and may generate NaNs "
+                    "for cross-statistics involving these channels.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+            data_st.to_norm(norm_type="self", norm_batch_mean=norm_batch_mean)
+
             self.var_ref = data_st.var_ref
             if SC == "ScatCov":
                 self.S2_ref_sqrt_chan_diag = data_st.S2_ref_sqrt_chan_diag
             if compute_PS:
-                self.PS_ref = data_st.PS_ref
+                self.PS_ref_sqrt_chan_diag = data_st.PS_ref_sqrt_chan_diag
 
         elif norm == "load_ref":
-            if mean_ref is None:
-                raise Exception(
-                    "mean_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
-                )
             if var_ref is None:
                 raise Exception(
                     "var_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
@@ -692,21 +670,22 @@ class ST_Operator:
                 raise Exception(
                     "S2_ref_sqrt_chan_diag should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
                 )
-            if compute_PS and PS_ref is None:
+            if compute_PS and PS_ref_sqrt_chan_diag is None:
                 raise Exception(
-                    "PS_ref should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
+                    "PS_ref_sqrt_chan_diag should be stored in the ST_Operator or given in apply argument when norm='load_ref'"
                 )
 
             kwargs = {}
-            kwargs["mean_ref"] = mean_ref
             kwargs["var_ref"] = var_ref
             if SC == "ScatCov":
                 kwargs["S2_ref_sqrt_chan_diag"] = S2_ref_sqrt_chan_diag
             if compute_PS:
-                kwargs["PS_ref"] = PS_ref
+                kwargs["PS_ref_sqrt_chan_diag"] = PS_ref_sqrt_chan_diag
 
             # Appel avec seulement les bons arguments
-            data_st.to_norm(norm_type="from_ref", **kwargs)
+            data_st.to_norm(
+                norm_type="from_ref", norm_batch_mean=norm_batch_mean, **kwargs
+            )
 
         if iso:
             data_st.to_iso()
