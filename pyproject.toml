@@ -1,3 +1,18 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "STL"
+dynamic = ["version"]
+
+[tool.setuptools.packages.find]
+include = ["STL_main*"]
+
+[tool.setuptools_scm]
+version_scheme = "post-release"
+local_scheme = "no-local-version"
+
 [tool.isort]
 profile = "black"
 line_length = 88

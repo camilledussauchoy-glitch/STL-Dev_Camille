@@ -15,7 +15,16 @@ from torch.optim import LBFGS
 
 class ScatteringMatchModel(nn.Module):
     def __init__(
-        self, st_op, DataClass, pbc, init_shape, compute_cross_matrix, device, dtype
+        self,
+        st_op,
+        DataClass,
+        pbc,
+        init_shape,
+        compute_cross_matrix,
+        compute_PS,
+        mean_field,
+        device,
+        dtype,
     ):
         super().__init__()
         self.st_op = st_op
@@ -24,6 +33,8 @@ class ScatteringMatchModel(nn.Module):
         self.init_shape = init_shape
         self.mask_full_res = st_op.wavelet_op.mask_full_res
         self.compute_cross_matrix = compute_cross_matrix
+        self.compute_PS = compute_PS
+        self.mean_field = mean_field
 
         # Learnable field u
         self.u = torch.randn(
@@ -51,9 +62,13 @@ class ScatteringMatchModel(nn.Module):
     def forward(self):
         DC_u = self.DataClass(self.u, pbc=self.pbc)
         st_u = self.st_op.apply(
-            DC_u, compute_cross_matrix=self.compute_cross_matrix, norm="load_ref"
+            DC_u,
+            compute_cross_matrix=self.compute_cross_matrix,
+            compute_PS=self.compute_PS,
+            norm="load_ref",
+            norm_batch_mean=self.mean_field,
         )
-        s_flat_u = st_u.to_flatten(mean_along_batch=True, keepnans=True)
+        s_flat_u = st_u.to_flatten(mean_along_batch=self.mean_field, keepnans=True)
         return s_flat_u
 
 
@@ -62,9 +77,12 @@ def optimize_scattering_LBFGS(
     st_op_target,
     st_op_running,
     pbc_running=True,
+    running_shape=None,
     compute_cross_matrix=None,
-    max_iter=100,
+    compute_PS=False,
     nbatch=1,
+    mean_field=True,
+    max_iter=100,
     lr=1.0,
     history_size=50,
     print_iter=10,
@@ -73,7 +91,7 @@ def optimize_scattering_LBFGS(
 ):
     device = st_op_running.wavelet_op.device
     dtype = st_op_running.wavelet_op.dtype
-    print("Running synthesis on device", device, "dtype", dtype)
+    print("Running synthesis on device :", device, "dtype :", dtype)
 
     torch.manual_seed(seed) if seed is not None else None
 
@@ -88,13 +106,35 @@ def optimize_scattering_LBFGS(
 
     if input_dim == 2:
         target_shape = (1, 1, *target.array.shape)
-        init_shape = (nbatch, 1, *target.array.shape)
+        if running_shape is None:
+            init_shape = (nbatch, 1, *target.array.shape)
+        else:
+            assert len(running_shape) == 2, "running_shape should be a tuple of (H,W)"
+            init_shape = (nbatch, 1, *running_shape)
+
     elif input_dim == 3:
         target_shape = (1, *target.array.shape)
-        init_shape = (nbatch, *target.array.shape)
+        if running_shape is None:
+            init_shape = (nbatch, *target.array.shape)
+        else:
+            assert len(running_shape) == 2, "running_shape should be a tuple of (H,W)"
+            init_shape = (nbatch, target.array.shape[0], *running_shape)
+
+    elif input_dim == 4:
+        target_shape = target.array.shape
+        if running_shape is None:
+            init_shape = (nbatch, *target.array.shape[-3:])
+        else:
+            assert len(running_shape) == 2, "running_shape should be a tuple of (H,W)"
+            init_shape = (nbatch, target.array.shape[1], *running_shape)
     else:
-        raise ValueError("target.array must be 2D or 3D tensor")
+        raise ValueError("target.array must be 2D, 3D or 4D tensor")
     print("Initial shape for u:", init_shape)
+
+    if not mean_field and target.array.shape[0] != init_shape[0]:
+        raise ValueError(
+            "If mean_field is False, target and running batch sizes should match"
+        )
 
     # Reference scattering
     with torch.no_grad():
@@ -104,14 +144,16 @@ def optimize_scattering_LBFGS(
 
         l_target.array = l_target.array.reshape(target_shape)
         l_target, mean_target, std_target = st_op_target.wavelet_op.standardize(
-            l_target, inplace=True
+            l_target, mean_field=mean_field, inplace=True
         )
 
         target_stats = st_op_target.apply(
-            l_target, norm="store_ref", compute_cross_matrix=compute_cross_matrix
-        ).to_flatten(
-            keepnans=True
-        )  # No mean along batch bc target is expected to only have one sample
+            l_target,
+            compute_cross_matrix=compute_cross_matrix,
+            compute_PS=compute_PS,
+            norm="store_ref",
+            norm_batch_mean=mean_field,
+        ).to_flatten(mean_along_batch=mean_field, keepnans=True)
 
     target_stats = target_stats.detach()
     target_coeffs_mask = ~target_stats.isnan()
@@ -120,8 +162,9 @@ def optimize_scattering_LBFGS(
 
     # reference to running normalization
     st_op_running.S2_ref_sqrt_chan_diag = st_op_target.S2_ref_sqrt_chan_diag
-    st_op_running.mean_ref = st_op_target.mean_ref
     st_op_running.var_ref = st_op_target.var_ref
+    if compute_PS:
+        st_op_running.PS_ref_sqrt_chan_diag = st_op_target.PS_ref_sqrt_chan_diag
 
     # Model with learnable u
     model = ScatteringMatchModel(
@@ -130,6 +173,8 @@ def optimize_scattering_LBFGS(
         pbc=pbc_running,
         init_shape=init_shape,
         compute_cross_matrix=compute_cross_matrix,
+        compute_PS=compute_PS,
+        mean_field=mean_field,
         device=device,
         dtype=dtype,
     )
@@ -192,7 +237,7 @@ def optimize_scattering_LBFGS(
 
     u_opt = model.u.detach()
 
-    # Unstandardize u_opt with target mean and var before computing stats
+    # Unstandardize u_opt with the computed mean and std of the target
     DC_u_opt = target.__class__(u_opt, pbc=pbc_running)
     st_op_running.wavelet_op.unstandardize(
         DC_u_opt, mean=mean_target, std=std_target, inplace=True
@@ -208,3 +253,108 @@ def optimize_scattering_LBFGS(
         u_opt = u_opt[0]  # remove batch dim
 
     return u_opt, loss_history
+
+
+#######################################################################################
+def synthesize_from_maps(
+    data_target,
+    pbc_running,
+    nbatch,
+    running_shape=None,
+    running_mask=None,
+    mean_field=True,
+    compute_cross_matrix=None,
+    has_fewer_convolutions=False,
+    **optim_kwargs,
+):
+    """
+    User-friendly wrapper to synthesize field maps from target maps.
+
+    Parameters
+    ----------
+    running_shape : tuple of int, optional
+        Default is None. If None, the running field has the same shape as the target.
+
+    running_mask : torch.BoolTensor, optional
+        Default is None. If None, the same mask as the target is used.
+        If a new mask is provided, it must be a boolean tensor with shape matching the running field.
+
+    mean_field : bool, optional
+        Default is True. Default value allows one to perform synthesis between N target samples and M running samples (with N different from or
+        equal to M) while matching statistics computed from the batch-averaged field.
+
+    """
+
+    if running_mask is None:
+        # Same mask for running and target
+        array = (
+            np.zeros(running_shape) if running_shape is not None else data_target.array
+        )
+        data_running = data_target.__class__(array=array, pbc=pbc_running)
+    else:
+        if running_shape is None and data_target.array.shape[-2:] != running_mask.shape:
+            raise ValueError("running_mask shape should match target array shape")
+        elif running_shape is not None and running_shape != running_mask.shape:
+            raise ValueError("running_mask shape should match running_shape")
+
+        data_running = data_target.__class__(array=running_mask, pbc=pbc_running)
+
+    # Select J used for synthesis
+    J_target = data_target.get_wavelet_op().J - (not data_target.pbc)
+    J_running = data_running.get_wavelet_op().J - (not data_running.pbc)
+    J = min(J_target, J_running)
+
+    n_bins_target = data_target.get_CS_op().n_bins
+    n_bins_running = data_running.get_CS_op().n_bins
+    n_bins = min(n_bins_target, n_bins_running)
+
+    if J_target != J_running:
+        print(
+            f"Warning: target.J = {J_target}, running.J = {J_running}. Synthesis will use J = {J}."
+        )
+
+    # Get scattering operators for target and running data with selected J
+    st_op_target = data_target.get_ST_op(
+        J=J, has_fewer_convolutions=has_fewer_convolutions, n_bins=n_bins
+    )
+
+    st_op_running = data_running.get_ST_op(
+        J=J,
+        has_fewer_convolutions=has_fewer_convolutions,
+        n_bins=n_bins,
+        replace_nan_value=None,
+    )
+
+    # Disable power spectrum optimization if NaN values are present in target and/or running data
+    target_has_nan = data_target.array.isnan().any()
+    running_has_nan = data_running.array.isnan().any()
+
+    if target_has_nan or running_has_nan:
+        print(
+            "⚠️ Warning: NaN detected in target and/or running data.\n"
+            "Power spectrum optimization is disabled because its computation is not yet implemented for NaN values in any dataclass. \n"
+        )
+
+    compute_PS = not (target_has_nan or running_has_nan)
+
+    # Set default optimization parameters and update with user-provided values
+    optim_params = dict(
+        max_iter=50, lr=1.0, history_size=50, print_iter=10, verbose=True, seed=26
+    )
+    optim_params.update(optim_kwargs)
+
+    # Run optimization
+    u_opt, _ = optimize_scattering_LBFGS(
+        target=data_target,
+        st_op_target=st_op_target,
+        st_op_running=st_op_running,
+        running_shape=running_shape,
+        pbc_running=pbc_running,
+        compute_cross_matrix=compute_cross_matrix,
+        compute_PS=compute_PS,
+        nbatch=nbatch,
+        mean_field=mean_field,
+        **optim_params,
+    )
+
+    return u_opt
