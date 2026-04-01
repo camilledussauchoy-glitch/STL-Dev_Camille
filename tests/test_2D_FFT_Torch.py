@@ -14,6 +14,7 @@ else:
     print(f"Parent directory already in sys.path: ...\\{PARENT_DIR.name}")
 DATA_TEST_PATH = Path(__file__).parent.parent / "data" / "test"
 
+import STL_main
 from STL_main.STL_2D_FFT_Torch import STL_2D_FFT_Torch as DataClass
 
 
