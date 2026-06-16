@@ -83,67 +83,78 @@ class ST_Statistics:
     ########################################
     def __init__(
         self,
-        DT,
+        DataClass,
         N0,  ######################################## not used?
-        J,  ######################################## not used?
-        L,  ######################################## not used?
-        WType,  ######################################## not used?
-        SC,
         Nb,
         Nc,
         wavelet_op,
+        SC,
+        has_fewer_convolutions,
+        compute_cross_matrix,
         compute_PS,
+        n_bins,
+        standardized,
+        mean_pre_std,
+        std_pre_std,
     ):
         """
         Constructor, see details above.
         """
 
         # Main parameters
-        self.DT = DT
+        self.DataClass = DataClass
         self.N0 = N0  ######################################## not used?
-
-        # Wavelet operator
-        self.wavelet_op = wavelet_op
+        self.Nb = Nb
+        self.Nc = Nc
 
         # Wavelet transform related parameters
         self.wavelet_op = wavelet_op
         self.J = self.wavelet_op.J
         self.L = self.wavelet_op.L
         self.WType = self.wavelet_op.WType
+        self.mask_full_res = self.wavelet_op.mask_full_res
+        self.device = self.wavelet_op.device
+        self.dtype = self.wavelet_op.dtype
 
         # Scattering transform related parameters
         self.SC = SC
+        self.S2_ref_sqrt_chan_diag = None
+        self.has_fewer_convolutions = has_fewer_convolutions
+        self.compute_cross_matrix = compute_cross_matrix
 
-        # Data related parameters
-        self.Nb = Nb
-        self.Nc = Nc
+        # Power spectrum computation
+        self.compute_PS = compute_PS
+        self.n_bins = n_bins
+        self.PS_ref_sqrt_chan_diag = None
+
+        # Mean and variance of data if standardization is applied
+        self.standardized = standardized
+        self.mean_pre_std = mean_pre_std
+        self.std_pre_std = std_pre_std
 
         # Additional transform/compression related parameters. While put to
         # False/None for the initialization, their value are modified if these
         # methods are called by the scattering operator, or independently.
         self.norm = False
-        self.S2_ref_sqrt_chan_diag = None
         self.iso = False
         self.angular_ft = False
         self.scale_ft = False
         self.flatten = False
         self.mask_st = None  # Not used in flatten method for now
 
-        # Power spectrum computation
-        self.compute_PS = compute_PS
-        self.PS_ref_sqrt_chan_diag = None
-
     @staticmethod
-    def _get_sqrt_chan_diag(stat_ref):
+    def _get_sqrt_chan_diag(stat_ref, norm_batch_mean):
         """
         Prepare S2_ref that has shape [Nb,Nc,Nc,J,L] or PS_ref that has shape [Nb,Nc,Nc,n_bins]
-        by keeping its diagonal and applying sqrt
+        by keeping its diagonal, averaging over the batch dimension if norm_batch_mean is True, and applying sqrt.
         """
         stat_ref_chan_diag = stat_ref.diagonal(dim1=1, dim2=2).movedim(
             -1, 1
         )  # [Nb,Nc,J,L] or [Nb,Nc,n_bins] for S2 or PS
         stat_ref_sqrt_chan_diag = bk.sqrt(
-            stat_ref_chan_diag
+            stat_ref_chan_diag.mean(dim=0, keepdim=True)
+            if norm_batch_mean
+            else stat_ref_chan_diag
         )  # [Nb,Nc,J,L] or [Nb,Nc,n_bins]
         return stat_ref_sqrt_chan_diag
 
@@ -152,7 +163,6 @@ class ST_Statistics:
         Normalize the ScatCov statistics S1,S2,S3,S4
         using self.S2_ref_sqrt_chan_diag
         """
-
         # self.S1 = self.S1 / self.S2_ref_sqrt_chan_diag  # [Nb,Nc,J1,L1]
         self.S1 = self.S1 / bk.sqrt(
             self.S2_ref_sqrt_chan_diag[:, :, None]
@@ -162,7 +172,6 @@ class ST_Statistics:
             self.S2_ref_sqrt_chan_diag[:, :, None]
             * self.S2_ref_sqrt_chan_diag[:, None, :]
         )  # [Nb,Nc,Nc,J1,L1]
-
         self.S3 = self.S3 / (
             self.S2_ref_sqrt_chan_diag[:, :, None, :, None, :, None]
             * self.S2_ref_sqrt_chan_diag[:, None, :, None, :, None, :]
@@ -206,66 +215,45 @@ class ST_Statistics:
             raise Exception("Normalization can only be done before angular ft")
         if self.scale_ft:
             raise Exception("Normalization can only be done before scale_ft")
-
         # Leave the function if no normalization is required
         if norm_type is None:
             raise Exception("No normalization type specified")
-
         # Verifications
         if self.norm:
             raise Exception("ST statistics are already normalized")
-
         # Store_ref normalization
         elif norm_type == "self":
-
             var_ref = self.var * 1.0
             self.var_ref = (
                 var_ref if not norm_batch_mean else var_ref.mean(dim=0, keepdim=True)
             )
-
             if self.SC == "ScatCov":
                 if self.S2_ref_sqrt_chan_diag is None:
                     # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
                     # and store as reference
-                    S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.S2)
-                    self.S2_ref_sqrt_chan_diag = (
-                        S2_ref_sqrt_chan_diag
-                        if not norm_batch_mean
-                        else S2_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
+                    self.S2_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(
+                        self.S2, norm_batch_mean=norm_batch_mean
                     )
 
             if self.compute_PS:
                 if self.PS_ref_sqrt_chan_diag is None:
-                    # prepare self.S2 that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal and applying sqrt
+                    # prepare self.PS that has shape [Nb,Nc,Nc,J,L] by keeping its diagonal, averaging over the batch dimension if norm_batch_mean is True, and applying sqrt
                     # and store as reference
-                    PS_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(self.PS)
-                    self.PS_ref_sqrt_chan_diag = (
-                        PS_ref_sqrt_chan_diag
-                        if not norm_batch_mean
-                        else PS_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
+                    self.PS_ref_sqrt_chan_diag = self._get_sqrt_chan_diag(
+                        self.PS, norm_batch_mean=norm_batch_mean
                     )
 
         # Load_ref normalization
         elif norm_type == "from_ref":
 
-            self.var_ref = (
-                var_ref if not norm_batch_mean else var_ref.mean(dim=0, keepdim=True)
-            )
+            self.var_ref = var_ref
 
             if self.SC == "ScatCov":
                 # store as reference
-                self.S2_ref_sqrt_chan_diag = (
-                    S2_ref_sqrt_chan_diag
-                    if not norm_batch_mean
-                    else S2_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
-                )
+                self.S2_ref_sqrt_chan_diag = S2_ref_sqrt_chan_diag
 
             if self.compute_PS:
-                self.PS_ref_sqrt_chan_diag = (
-                    PS_ref_sqrt_chan_diag
-                    if not norm_batch_mean
-                    else PS_ref_sqrt_chan_diag.mean(dim=0, keepdim=True)
-                )
+                self.PS_ref_sqrt_chan_diag = PS_ref_sqrt_chan_diag
 
         # Perform normalization and store reference
         self.var = self.var / self.var_ref
@@ -514,54 +502,103 @@ class ST_Statistics:
         return self
 
     ########################################
-    def to_flatten(self, mask_st=None, mean_along_batch=False, keepnans=False):
+    def to_flatten(
+        self,
+        keep_batch_dim=False,
+        mask_st=None,
+        mean_along_batch=False,
+        keepnans=False,
+        flatten_complex=False,
+    ):
         """
-        Produce a 1d array that can be used for loss constructions.
+        Produce either a 1d array that can be used for loss constructions or a 2d array, keeping the batch dimension, if keep_batch_dim is True.
 
         A mask can be used to select the coefficients from the initial 1d array.
 
         Parameters
         ----------
+        - keep_batch_dim : bool, default False
+            if True, the output will have shape [Nb, n_coeff] instead of [Nb * n_coeff]
         - mask_st : binary 1d array
             mask for st coefficients after initial flattening
-
+        - flatten_complex : bool, default False
+            if True, complex coefficients will be flattened into two separate real numbers (real and imaginary parts).
+            Since S1, S2 and PS are real, their null imaginary part won't be included in the flattened statistics tensor.
         Output
         ----------
-        - st_flatten : 1d array
+        - st_flatten : 1d array if keep_batch_dim is False, else 2d array with shape [Nb, n_coeff]
 
         """
 
         # Collect all statistics into a list
         stats = [self.mean, self.var]  # Always include mean and variance
+        stats_names = ["mean", "var"]
 
         if self.SC == "ScatCov":
             stats += [self.S1, self.S2, self.S3, self.S4]
+            stats_names += ["S1", "S2", "S3", "S4"]
 
         if self.compute_PS:
             stats += [self.PS]
+            stats_names += ["PS"]
 
         if mean_along_batch:
-            stats = [bk.mean(s, 0) for s in stats]
-
+            stats = [bk.mean(s, dim=0, keepdim=True) for s in stats]
         # Flatten each, remove NaNs, concat
         flattened_list = []
-        for S in stats:
-            # S may contain NaNs → keep only non-NaNs
-            S_flat = S.reshape(-1)
-            flattened_list.append(S_flat if keepnans else S_flat[~bk.isnan(S_flat)])
+        for S, S_name in zip(stats, stats_names):
+            if flatten_complex and bk.is_complex(S):
 
-        # Concatenate all statistics into a single 1D vector
-        st_flatten = bk.cat(flattened_list, dim=0)
+                S = bk.view_as_real(
+                    S
+                )  # [..., 2] with last dimension for real and imag parts
+
+                if S_name in ["S1", "S2", "PS"]:
+                    S = S[..., 0]  # Keep only real part
+
+            S_flat = S.reshape(-1) if not keep_batch_dim else S.reshape(S.shape[0], -1)
+
+            # Remove NaNs if specified
+            if not keepnans:
+                nan_mask = bk.isnan(S_flat)
+
+                if not keep_batch_dim:
+                    flattened_list.append(S_flat[~nan_mask])
+                else:
+                    # Check that all batch elements have NaNs in the same positions
+                    assert bk.all(nan_mask == nan_mask[0]), (
+                        "NaNs must be at the same indices across all batch elements "
+                        "when keep_batch_dim=True and keepnans=False"
+                    )
+                    flattened_list.append(S_flat[:, ~nan_mask[0]])
+            else:
+                flattened_list.append(S_flat)
+
+        # Concatenate all statistics into a single 1D vector (or 2D if keep_batch_dim is True)
+        st_flatten = (
+            bk.cat(flattened_list, dim=0)
+            if not keep_batch_dim
+            else bk.cat(flattened_list, dim=1)
+        )
 
         # Optional mask after nan-removal
         if mask_st is not None:
             mask_st = bk.as_tensor(mask_st, dtype=bk.bool, device=st_flatten.device)
-            if mask_st.numel() != st_flatten.numel():
-                raise ValueError(
-                    f"mask_st length {mask_st.numel()} does not match "
-                    f"flattened statistic length {st_flatten.numel()}."
+
+            if not keep_batch_dim:
+                if mask_st.numel() != st_flatten.numel():
+                    raise ValueError(
+                        f"mask_st length ({mask_st.numel()}) does not match "
+                        f"flattened statistic length ({st_flatten.numel()})."
+                    )
+                st_flatten = st_flatten[mask_st]
+
+            else:
+                assert bk.all(mask_st == mask_st[0]), (
+                    "mask_st must be identical across all batch elements "
+                    "when keep_batch_dim=True"
                 )
-            st_flatten = st_flatten[mask_st]
+                st_flatten = st_flatten[:, mask_st[0]]
 
         self.st_flatten = st_flatten
 
